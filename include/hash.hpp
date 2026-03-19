@@ -16,4 +16,10 @@ namespace hash {
     inline uint64_t multiply_shift_add(uint64_t x, uint64_t a, uint64_t b, int k) {
         return (a * x + b) >> (64-k);
     }
+
+    inline uint64_t multiply_shift_add_avx2(uint64_t x, int k) {
+        
+    }
+
+
 }
