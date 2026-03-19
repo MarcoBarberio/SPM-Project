@@ -1,6 +1,8 @@
 #include "hash.hpp"
 #include <vector>
 #include <cstdint>
+#include "mapping.hpp"
+/**Generates a hash mapping for the given keys using the multiply-shift-add hash function. */
 std::vector<uint64_t> generate_mapping(const std::vector<uint64_t>& keys, int k) {
     uint64_t seed = 24;
     auto [a, b] = hash::generate_params(seed);
@@ -12,3 +14,4 @@ std::vector<uint64_t> generate_mapping(const std::vector<uint64_t>& keys, int k)
 
     return mapping;
 }
+

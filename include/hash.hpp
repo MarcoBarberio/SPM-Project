@@ -3,7 +3,7 @@
 
 namespace hash {
     /** Generates a pair of hash parameters (a, b) for the multiply-shift-add hash function. */
-    inline std::pair<uint64_t, uint64_t> generate_params(uint64_t seed = 42) {
+    inline std::pair<uint64_t, uint64_t> generate_params(uint64_t seed) {
         std::mt19937_64 rng(seed);
         std::uniform_int_distribution<uint64_t> dist;
 
