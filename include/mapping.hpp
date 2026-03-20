@@ -4,9 +4,13 @@
 #include <vector>
 #include <cstdint>
 
-std::vector<uint64_t> generate_mapping(
-    const std::vector<uint64_t>& keys,
-    int k
+void generate_mapping(
+    const uint64_t* __restrict__ in,
+    uint64_t* __restrict__ out,
+    size_t n,
+    int k,
+    uint64_t a,
+    uint64_t b
 );
 
 #endif
