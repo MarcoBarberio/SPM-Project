@@ -1,0 +1,16 @@
+#ifndef MAPPING_BASELINE_HPP
+#define MAPPING_BASELINE_HPP
+
+#include <vector>
+#include <cstdint>
+
+void generate_mapping_baseline(
+    const std::vector<uint64_t> &data,
+    std::vector<uint64_t> &mapping,
+    size_t n,
+    int k,
+    uint64_t a,
+    uint64_t b
+);
+
+#endif

@@ -1,13 +1,12 @@
 #include "utilities.hpp"
 #include <vector>
 #include <cstdint>
-#include "mapping.hpp"
-#include "hpc_helpers.hpp"
+#include "mapping_baseline.hpp"
 
 /**Generates a hash mapping for the given keys using the multiply-shift-add hash function. */
-void generate_mapping(
-    const uint64_t* __restrict__ in,
-    uint64_t* __restrict__ out,
+void generate_mapping_baseline(
+    const std::vector<uint64_t> &data,
+    std::vector<uint64_t> &mapping,
     size_t n,
     int k,
     uint64_t a,
@@ -17,6 +16,6 @@ void generate_mapping(
 
     #pragma GCC ivdep
     for (size_t i = 0; i < n; ++i) {
-        out[i] = (a * in[i] + b) >> shift;
+        mapping[i] = (a * data[i] + b) >> shift;
     }
 }

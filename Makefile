@@ -5,22 +5,33 @@ CXXFLAGS  += -Wall
 
 NOVECFLAGS = -O3 -fno-tree-vectorize
 VECFLAGS   = -O3 -march=native -ffast-math -fopt-info-vec
-
-SOURCES    = $(wildcard src/*.cpp)
+AVXFLAGS   = -O3 -mavx2 -march=native
 
 TARGET_NOVEC = build/main_novec
 TARGET_VEC   = build/main_vec
+TARGET_AVX   = build/main_avx
 
 .PHONY: all clean
 
-all: build $(TARGET_NOVEC) $(TARGET_VEC)
+all: build $(TARGET_NOVEC) $(TARGET_VEC) $(TARGET_AVX)
 
+build:
+	mkdir -p build
 
-$(TARGET_NOVEC): $(SOURCES)
-	$(CXX) $(INCLUDES) $(CXXFLAGS) $(NOVECFLAGS) -o $@ $(SOURCES)
+$(TARGET_NOVEC):
+	$(CXX) $(INCLUDES) $(CXXFLAGS) $(NOVECFLAGS) \
+	src/main_baseline.cpp src/mapping_baseline.cpp \
+	-o $@
 
-$(TARGET_VEC): $(SOURCES)
-	$(CXX) $(INCLUDES) $(CXXFLAGS) $(VECFLAGS) -o $@ $(SOURCES)
+$(TARGET_VEC):
+	$(CXX) $(INCLUDES) $(CXXFLAGS) $(VECFLAGS) \
+	src/main_baseline.cpp src/mapping_baseline.cpp \
+	-o $@
+
+$(TARGET_AVX):
+	$(CXX) $(INCLUDES) $(CXXFLAGS) $(AVXFLAGS) \
+	src/main_avx.cpp src/mapping_avx.cpp \
+	-o $@
 
 clean:
 	-rm -f build/*

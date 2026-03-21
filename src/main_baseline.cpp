@@ -1,11 +1,9 @@
 #include "utilities.hpp"
-#include "mapping.hpp"
+#include "mapping_baseline.hpp"
 #include "hpc_helpers.hpp"
 #include <vector>
 #include <iostream>
-
-#include <iostream>
-#include <cstdlib>   // std::stoull, std::stoi
+#include <cstdlib> 
 
 int main(int argc, char* argv[]) {
 
@@ -24,15 +22,11 @@ int main(int argc, char* argv[]) {
 
     std::vector<uint64_t> mapping(n);
 
-    const uint64_t* in = keys.data();
-    uint64_t* out = mapping.data();
-
     for (int i = 0; i < warmup; ++i) {
-        generate_mapping(in, out, n, k, a, b);
+        generate_mapping_baseline(keys, mapping, n, k, a, b);
     }
-
     TIMERSTART(run)
-    generate_mapping(in, out, n, k, a, b);
+    generate_mapping_baseline(keys, mapping, n, k, a, b);
     TIMERSTOP(run)
 
     std::cout << "n = " << n << "\n";
