@@ -7,8 +7,8 @@ NOVECFLAGS = -O3 -fno-tree-vectorize
 VECFLAGS   = -O3 -march=native -ffast-math -fopt-info-vec
 AVXFLAGS   = -O3 -mavx2 -march=native
 
-TARGET_NOVEC = build/main_novec
-TARGET_VEC   = build/main_vec
+TARGET_NOVEC = build/main_baseline
+TARGET_VEC   = build/main_autovec
 TARGET_AVX   = build/main_avx
 
 .PHONY: all clean
