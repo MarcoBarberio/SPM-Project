@@ -4,7 +4,7 @@ INCLUDES   = -I./include
 CXXFLAGS  += -Wall
 
 NOVECFLAGS = -O3 -fno-tree-vectorize
-VECFLAGS   = -O3 -march=native -ffast-math -fopt-info-vec
+VECFLAGS   = -O3 -march=native -mavx2 -mprefer-vector-width=256  -fopt-info-vec
 AVXFLAGS   = -O3 -mavx2 -march=native
 
 TARGET_NOVEC = build/main_baseline
