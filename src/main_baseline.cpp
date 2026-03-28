@@ -33,8 +33,8 @@ int main(int argc, char* argv[])
             print_array = true;
     }
 
-    auto keys = generate_random_keys(n, seed);
     auto [a, b] = generate_params(seed);
+    auto keys = generate_random_keys(n, seed);
 
     std::vector<uint64_t> mapping(n);
 

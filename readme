@@ -1,0 +1,65 @@
+Compile the programs using:
+
+make
+
+Or compile manually:
+
+Baseline
+g++ -O3 -fno-tree-vectorize main_baseline.cpp -o build/main_baseline
+
+Auto-vectorized
+g++ -O3 -march=native main_baseline.cpp -o build/main_autovec
+
+AVX2
+g++ -O3 -mavx2 -march=native main_avx.cpp -o build/main_avx
+
+CUDA
+nvcc -O3 main_cuda.cpp -o build/main_cuda
+
+General usage:
+
+./build/main_<version> N k seed warmup
+
+Example:
+
+./build/main_baseline 1000000 16 0 5
+./build/main_autovec 1000000 16 0 5
+./build/main_avx 1000000 16 0 5
+./build/main_cuda 1000000 16 0 5
+
+Parameters:
+
+N = number of keys
+k = number of partition bits (P = 2^k)
+seed = random seed
+warmup = number of warmup runs
+
+Optional flags:
+
+--json    save output to JSON file
+--print   print mapping array (only for small N)
+
+Example:
+
+./build/main_baseline 1000 16 0 5 --json --print
+
+To run all experiments automatically:
+
+python orchestrator.py
+
+This script:
+
+Runs baseline, auto-vectorized, AVX2, and CUDA versions
+Checks correctness using checksum
+Computes speedups
+
+Saves results to:
+results/results.json
+Output
+
+For each run, the following metrics are saved:
+
+Execution time
+Speedup
+Checksum correctness
+Array correctness (for small N)

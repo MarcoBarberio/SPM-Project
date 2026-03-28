@@ -24,9 +24,11 @@ df = pd.DataFrame(data)
 df["throughput_baseline"] = df["N"] / df["time_baseline"]
 df["throughput_autovec"] = df["N"] / df["time_autovec"]
 df["throughput_avx"] = df["N"] / df["time_avx"]
+df["throughput_cuda"] = df["N"] / df["time_cuda"]
 
 df["speedup_autovec"] = df["time_baseline"] / df["time_autovec"]
 df["speedup_avx"] = df["time_baseline"] / df["time_avx"]
+df["speedup_cuda"] = df["time_baseline"] / df["time_cuda"]
 
 # =========================
 # SALVA RAW CSV
@@ -40,10 +42,13 @@ summary = df.groupby("N").agg({
     "time_baseline": ["median", "std"],
     "time_autovec": ["median", "std"],
     "time_avx": ["median", "std"],
+    "time_cuda": ["median", "std"],
     "speedup_autovec": ["median", "std"],
     "speedup_avx": ["median", "std"],
+    "speedup_cuda": ["median", "std"],
     "throughput_autovec": ["median", "std"],
-    "throughput_avx": ["median", "std"]
+    "throughput_avx": ["median", "std"],
+    "throughput_cuda": ["median", "std"]
 }).reset_index()
 
 summary.columns = [
@@ -51,10 +56,13 @@ summary.columns = [
     "baseline_median", "baseline_std",
     "autovec_median", "autovec_std",
     "avx_median", "avx_std",
+    "cuda_median", "cuda_std",
     "speedup_autovec_median", "speedup_autovec_std",
     "speedup_avx_median", "speedup_avx_std",
+    "speedup_cuda_median", "speedup_cuda_std",
     "throughput_autovec_median", "throughput_autovec_std",
-    "throughput_avx_median", "throughput_avx_std"
+    "throughput_avx_median", "throughput_avx_std",
+    "throughput_cuda_median", "throughput_cuda_std"
 ]
 
 # =========================
@@ -63,12 +71,14 @@ summary.columns = [
 # tempi in microsecondi
 for col in ["baseline_median", "baseline_std",
             "autovec_median", "autovec_std",
-            "avx_median", "avx_std"]:
+            "avx_median", "avx_std",
+            "cuda_median", "cuda_std"]:
     summary[col] *= 1e6
 
 # throughput in milioni elementi/s
 for col in ["throughput_autovec_median", "throughput_autovec_std",
-            "throughput_avx_median", "throughput_avx_std"]:
+            "throughput_avx_median", "throughput_avx_std",
+            "throughput_cuda_median", "throughput_cuda_std"]:
     summary[col] /= 1e6
 
 # =========================
@@ -97,6 +107,10 @@ formatted = pd.DataFrame({
         fmt_mean_std(m, s, decimals=2, unit="µs")
         for m, s in zip(summary["avx_median"], summary["avx_std"])
     ],
+    "CUDA": [
+        fmt_mean_std(m, s, decimals=2, unit="µs")
+        for m, s in zip(summary["cuda_median"], summary["cuda_std"])
+    ],
     "speedup autovec": [
         fmt_mean(m, decimals=2, suffix="x")
         for m in summary["speedup_autovec_median"]
@@ -105,13 +119,17 @@ formatted = pd.DataFrame({
         fmt_mean(m, decimals=2, suffix="x")
         for m in summary["speedup_avx_median"]
     ],
-    "throughput autovec": [
-        fmt_mean_std(m, s, decimals=2, unit="Melem/s")
-        for m, s in zip(summary["throughput_autovec_median"], summary["throughput_autovec_std"])
+    "speedup CUDA": [
+        fmt_mean(m, decimals=2, suffix="x")
+        for m in summary["speedup_cuda_median"]
     ],
     "throughput AVX2": [
         fmt_mean_std(m, s, decimals=2, unit="Melem/s")
         for m, s in zip(summary["throughput_avx_median"], summary["throughput_avx_std"])
+    ],
+    "throughput CUDA": [
+        fmt_mean_std(m, s, decimals=2, unit="Melem/s")
+        for m, s in zip(summary["throughput_cuda_median"], summary["throughput_cuda_std"])
     ]
 })
 
@@ -126,7 +144,7 @@ formatted.to_csv("results/tables/summary_table.csv", index=False)
 tabular_only = formatted.to_latex(
     index=False,
     escape=True,
-    column_format="rlllllll"
+    column_format="rllllllll"
 )
 
 latex_table = r"""\begin{table}[htbp]
@@ -137,7 +155,7 @@ latex_table = r"""\begin{table}[htbp]
 \resizebox{\textwidth}{!}{%
 """ + "\n" + tabular_only + r"""%
 }
-\caption{Performance comparison between baseline, autovectorized, and AVX2 implementations. Median execution time over multiple runs is reported.}
+\caption{Performance comparison between baseline, autovectorized, AVX2 and CUDA implementations. Median execution time over multiple runs is reported.}
 \label{tab:performance-comparison}
 \end{table}
 """
@@ -152,6 +170,7 @@ plt.figure()
 plt.errorbar(summary["N"], summary["baseline_median"], yerr=summary["baseline_std"], label="baseline")
 plt.errorbar(summary["N"], summary["autovec_median"], yerr=summary["autovec_std"], label="autovec")
 plt.errorbar(summary["N"], summary["avx_median"], yerr=summary["avx_std"], label="AVX2")
+plt.errorbar(summary["N"], summary["cuda_median"], yerr=summary["cuda_std"], label="CUDA")
 plt.xscale("log")
 plt.xlabel("N")
 plt.ylabel("Time (µs)")
@@ -165,8 +184,8 @@ plt.close()
 # GRAFICO THROUGHPUT VS N
 # =========================
 plt.figure()
-plt.plot(summary["N"], summary["throughput_autovec_median"], label="Autovec")
 plt.plot(summary["N"], summary["throughput_avx_median"], label="AVX2")
+plt.plot(summary["N"], summary["throughput_cuda_median"], label="CUDA")
 plt.xscale("log")
 plt.xlabel("N")
 plt.ylabel("Throughput (Melem/s)")
@@ -182,6 +201,7 @@ plt.close()
 plt.figure()
 plt.plot(summary["N"], summary["speedup_autovec_median"], label="Autovec")
 plt.plot(summary["N"], summary["speedup_avx_median"], label="AVX2")
+plt.plot(summary["N"], summary["speedup_cuda_median"], label="CUDA")
 plt.xscale("log")
 plt.xlabel("N")
 plt.ylabel("Speedup")
@@ -189,21 +209,6 @@ plt.title("Speedup vs N")
 plt.legend()
 plt.grid(True)
 plt.savefig("results/plots/speedup_vs_n.png")
-plt.close()
-
-# =========================
-# GRAFICO SPEEDUP VS PROBLEM SIZE (NUOVO)
-# =========================
-plt.figure()
-plt.plot(summary["N"], summary["speedup_autovec_median"], marker='o', label="Autovec Speedup")
-plt.plot(summary["N"], summary["speedup_avx_median"], marker='o', label="AVX2 Speedup")
-plt.xscale("log")
-plt.xlabel("Problem size (N)")
-plt.ylabel("Speedup")
-plt.title("Speedup vs Problem Size")
-plt.legend()
-plt.grid(True)
-plt.savefig("results/plots/speedup_vs_size.png")
 plt.close()
 
 print("Analysis complete. Tables and plots saved in results/")

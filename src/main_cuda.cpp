@@ -1,5 +1,5 @@
 #include "hpc_helpers.hpp"
-#include "mapping_avx.hpp"
+#include "mapping_cuda.hpp"
 #include "utilities.hpp"
 #include <cstdlib>
 #include <fstream>
@@ -36,19 +36,21 @@ int main(int argc, char* argv[])
     auto [a, b] = generate_params(seed);
     auto keys = generate_random_keys(n, seed);
 
+    double time_h2d = 0.0;
+    double time_kernel = 0.0;
+    double time_d2h = 0.0;
     std::vector<uint64_t> mapping(n);
 
-    // Warmup
     for (int i = 0; i < warmup; ++i)
     {
-        generate_mapping_avx(keys, mapping, n, k, a, b);
+        generate_mapping_cuda(keys, mapping, n, k, a, b, nullptr, nullptr, nullptr);
     }
 
     TIMERSTART(run)
-    generate_mapping_avx(keys, mapping, n, k, a, b);
+    generate_mapping_cuda(keys, mapping, n, k, a, b, &time_h2d, &time_kernel, &time_d2h);
     TIMERSTOP(run)
 
-    double time = elapsed_run;
+    double time_total = elapsed_run;
     uint64_t chk = checksum(mapping);
 
     if (json)
@@ -62,7 +64,10 @@ int main(int argc, char* argv[])
         file << "  \"k\": " << k << ",\n";
         file << "  \"seed\": " << seed << ",\n";
         file << "  \"warmup\": " << warmup << ",\n";
-        file << "  \"time\": " << time << ",\n";
+        file << "  \"time\": " << time_total << ",\n";
+        file << "  \"time_kernel\": " << time_kernel << ",\n";
+        file << "  \"time_h2d\": " << time_h2d << ",\n";
+        file << "  \"time_d2h\": " << time_d2h << ",\n";
         file << "  \"checksum\": " << chk;
 
         if (print_array && n < 500)
@@ -88,7 +93,10 @@ int main(int argc, char* argv[])
         std::cout << "k = " << k << "\n";
         std::cout << "seed = " << seed << "\n";
         std::cout << "warmup = " << warmup << "\n";
-        std::cout << "time = " << time << " s\n";
+        std::cout << "time = " << time_total << " s\n";
+        std::cout << "time_kernel = " << time_kernel << " s\n";
+        std::cout << "time_h2d = " << time_h2d << " s\n";
+        std::cout << "time_d2h = " << time_d2h << " s\n";
         std::cout << "checksum = " << chk << "\n";
 
         if (print_array && n < 500)
