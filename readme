@@ -37,7 +37,7 @@ warmup = number of warmup runs
 Optional flags:
 
 --json    save output to JSON file
---print   print mapping array (only for small N)
+--print   print mapping array (only for N<500)
 
 Example:
 
@@ -50,8 +50,9 @@ python orchestrator.py
 This script:
 
 Runs baseline, auto-vectorized, AVX2, and CUDA versions
-Checks correctness using checksum
+Checks correctness
 Computes speedups
+Computes Throughput
 
 Saves results to:
 results/results.json
@@ -62,4 +63,4 @@ For each run, the following metrics are saved:
 Execution time
 Speedup
 Checksum correctness
-Array correctness (for small N)
+Array correctness (for N<500)

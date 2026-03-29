@@ -1,7 +1,9 @@
+### Orchestrator to run all experiments and collect results in a JSON file.
 import subprocess
 import json
 import os
 
+# parameters
 Ns = [1e2, 5e2, 1e3, 5e3, 1e4, 5e4, 1e5, 5e5, 1e6, 5e6, 1e7, 5e7]
 seeds = list(range(11))
 k = 16
@@ -11,6 +13,7 @@ results = []
 os.makedirs("results", exist_ok=True)
 
 def run_and_read_json(executable, N, k, seed, warmup):
+    """Run experiments and collect results in a JSON file"""
     subprocess.run(
         [executable, str(N), str(k), str(seed), str(warmup), "--json", "--print"],
         check=True
@@ -46,6 +49,13 @@ for N in Ns:
         cuda_kernel = cuda.get("time_kernel", 0)
         cuda_d2h    = cuda.get("time_d2h", 0)
 
+        # Throughput (Melem/s)
+        throughput_base = N / base_time
+        throughput_vec  = N / vec_time
+        throughput_avx  = N / avx_time
+        throughput_cuda_total  = N / cuda_time if cuda_time > 0 else 0
+        throughput_cuda_kernel = N / cuda_kernel if cuda_kernel > 0 else 0
+
         base_checksum = base["checksum"]
         vec_checksum  = vec["checksum"]
         avx_checksum  = avx["checksum"]
@@ -74,6 +84,12 @@ for N in Ns:
             "time_cuda_h2d": cuda_h2d,
             "time_cuda_kernel": cuda_kernel,
             "time_cuda_d2h": cuda_d2h,
+
+            "throughput_baseline": throughput_base,
+            "throughput_autovec": throughput_vec,
+            "throughput_avx": throughput_avx,
+            "throughput_cuda_total": throughput_cuda_total,
+            "throughput_cuda_kernel": throughput_cuda_kernel,
 
             "speedup_autovec": base_time / vec_time,
             "speedup_avx": base_time / avx_time,

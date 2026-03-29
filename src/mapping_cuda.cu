@@ -23,35 +23,35 @@ __global__ void mapping_kernel(const uint64_t* data, uint64_t* mapping, size_t n
  * @param time_d2h (optional) The time taken to transfer data from device to host (in seconds).
  * */
 
-void generate_mapping_cuda(const std::vector<uint64_t>& data,
-                           std::vector<uint64_t>& mapping,
-                           size_t n, int k,
-                           uint64_t a, uint64_t b,
-                           double* time_h2d,
-                           double* time_kernel,
-                           double* time_d2h)
+void generate_mapping_cuda(const std::vector<uint64_t>& data, std::vector<uint64_t>& mapping, size_t n, int k,
+                           uint64_t a, uint64_t b, double* time_h2d, double* time_kernel, double* time_d2h)
 {
     const int shift = 64 - k;
 
     uint64_t *d_data, *d_mapping;
 
+    // Allocate device memory
     cudaMalloc(&d_data, n * sizeof(uint64_t));
     cudaMalloc(&d_mapping, n * sizeof(uint64_t));
 
     TIMERSTART(h2d);
+    // Copy data from host to device
     cudaMemcpy(d_data, data.data(), n * sizeof(uint64_t), H2D);
     cudaDeviceSynchronize();
     TIMERSTOP(h2d);
 
+    // Calculate block and grid sizes
     int blockSize = 256;
     int numBlocks = SDIV(n, blockSize);
 
     TIMERSTART(kernel);
+    // Launch kernel
     mapping_kernel<<<numBlocks, blockSize>>>(d_data, d_mapping, n, a, b, shift);
     cudaDeviceSynchronize();
     TIMERSTOP(kernel);
 
     TIMERSTART(d2h);
+    // Copy results from device to host
     cudaMemcpy(mapping.data(), d_mapping, n * sizeof(uint64_t), D2H);
     cudaDeviceSynchronize();
     TIMERSTOP(d2h);
@@ -59,7 +59,11 @@ void generate_mapping_cuda(const std::vector<uint64_t>& data,
     cudaFree(d_data);
     cudaFree(d_mapping);
 
-    if (time_h2d)   *time_h2d   = timeh2d   / 1000.0;
-    if (time_kernel)*time_kernel= timekernel/ 1000.0;
-    if (time_d2h)   *time_d2h   = timed2h   / 1000.0;
+    // Convert times to seconds and store in output parameters
+    if (time_h2d)
+        *time_h2d = timeh2d / 1000.0;
+    if (time_kernel)
+        *time_kernel = timekernel / 1000.0;
+    if (time_d2h)
+        *time_d2h = timed2h / 1000.0;
 }

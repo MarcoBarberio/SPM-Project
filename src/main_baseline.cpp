@@ -33,6 +33,7 @@ int main(int argc, char* argv[])
             print_array = true;
     }
 
+    // Generate random parameters and keys
     auto [a, b] = generate_params(seed);
     auto keys = generate_random_keys(n, seed);
 
