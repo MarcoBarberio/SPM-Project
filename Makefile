@@ -23,22 +23,22 @@ build:
 
 $(TARGET_NOVEC):
 	$(CXX) $(INCLUDES) $(CXXFLAGS) $(NOVECFLAGS) \
-	src/main_baseline.cpp src/mapping_baseline.cpp \
+	src/key_mapping/main_baseline.cpp src/key_mapping/mapping_baseline.cpp \
 	-o $@
 
 $(TARGET_VEC):
 	$(CXX) $(INCLUDES) $(CXXFLAGS) $(VECFLAGS) \
-	src/main_baseline.cpp src/mapping_baseline.cpp \
+	src/key_mapping/main_baseline.cpp src/key_mapping/mapping_baseline.cpp \
 	-o $@
 
 $(TARGET_AVX):
 	$(CXX) $(INCLUDES) $(CXXFLAGS) $(AVXFLAGS) \
-	src/main_avx.cpp src/mapping_avx.cpp \
+	src/key_mapping/main_avx.cpp src/key_mapping/mapping_avx.cpp \
 	-o $@
 
 $(TARGET_CUDA):
 	$(NVCC) $(INCLUDES) $(CUDAFLAGS) \
-	src/main_cuda.cpp src/mapping_cuda.cu \
+	src/key_mapping/main_cuda.cpp src/key_mapping/mapping_cuda.cu \
 	-o $@
 
 clean:

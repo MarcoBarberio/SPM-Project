@@ -1,5 +1,5 @@
-#include "mapping_baseline.hpp"
-#include "utilities.hpp"
+#include "key_mapping/mapping_baseline.hpp"
+#include "key_mapping/utilities.hpp"
 #include <cstdint>
 #include <vector>
 

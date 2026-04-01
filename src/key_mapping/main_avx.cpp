@@ -1,6 +1,6 @@
-#include "hpc_helpers.hpp"
-#include "mapping_baseline.hpp"
-#include "utilities.hpp"
+#include "key_mapping/hpc_helpers.hpp"
+#include "key_mapping/mapping_avx.hpp"
+#include "key_mapping/utilities.hpp"
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -42,11 +42,11 @@ int main(int argc, char* argv[])
     // Warmup
     for (int i = 0; i < warmup; ++i)
     {
-        generate_mapping_baseline(keys, mapping, n, k, a, b);
+        generate_mapping_avx(keys, mapping, n, k, a, b);
     }
 
     TIMERSTART(run)
-    generate_mapping_baseline(keys, mapping, n, k, a, b);
+    generate_mapping_avx(keys, mapping, n, k, a, b);
     TIMERSTOP(run)
 
     double time = elapsed_run;

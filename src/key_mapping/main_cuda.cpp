@@ -1,6 +1,6 @@
-#include "hpc_helpers.hpp"
-#include "mapping_cuda.hpp"
-#include "utilities.hpp"
+#include "key_mapping/hpc_helpers.hpp"
+#include "key_mapping/mapping_cuda.hpp"
+#include "key_mapping/utilities.hpp"
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
