@@ -1,5 +1,5 @@
 
-#include "key_mapping/hpc_helpers.hpp"
+#include "hpc_helpers.hpp"
 #include <cstdint>
 #include <vector>
 /** Computes the hash for each element in the input vector using the multiply-shift-add hash function. */

@@ -1,5 +1,5 @@
-#include "key_mapping/mapping_avx.hpp"
-#include "key_mapping/utilities.hpp"
+#include "mapping_avx.hpp"
+#include "utilities.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <immintrin.h>

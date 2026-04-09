@@ -1,6 +1,6 @@
-#include "key_mapping/hpc_helpers.hpp"
-#include "key_mapping/mapping_baseline.hpp"
-#include "key_mapping/utilities.hpp"
+#include "hpc_helpers.hpp"
+#include "mapping_baseline.hpp"
+#include "utilities.hpp"
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
