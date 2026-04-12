@@ -54,8 +54,8 @@ int main(int argc, char* argv[])
 
     if (json)
     {
+        
         std::string filename = "result_n" + std::to_string(n) + "_k" + std::to_string(k) + ".json";
-
         std::ofstream file(filename);
 
         file << "{\n";

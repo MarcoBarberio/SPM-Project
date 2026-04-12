@@ -11,7 +11,7 @@
  * @param a The multiplier for the hash function.
  * @param b The addend for the hash function.
  */
-void generate_mapping_baseline(const std::vector<uint64_t>& data, std::vector<uint64_t>& mapping, size_t n, int k,
+void generate_mapping_baseline(const std::vector<uint64_t>& data, std::vector<uint64_t>& mapping, std::size_t n, int k,
                                uint64_t a, uint64_t b)
 {
     const int shift = 64 - k;
@@ -19,6 +19,6 @@ void generate_mapping_baseline(const std::vector<uint64_t>& data, std::vector<ui
     #pragma GCC ivdep
     for (size_t i = 0; i < n; ++i)
     {
-        mapping[i] = (a * data[i] + b) >> shift;
+        mapping[i] = map_single_key(data[i], a, b, shift);
     }
 }

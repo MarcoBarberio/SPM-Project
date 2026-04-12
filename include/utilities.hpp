@@ -30,3 +30,14 @@ inline uint64_t checksum(const std::vector<uint64_t>& mapping)
     return std::accumulate(mapping.begin(), mapping.end(), 0ULL);
 }
 
+/**
+ * Maps a single key to a partition ID using the multiply-shift-add hash function.
+ * @param key The input key to be hashed.
+ * @param a The multiplier for the hash function.
+ * @param b The addend for the hash function.
+ * @param shift The number of bits to shift right to obtain the final partition ID (calculated as 64 - k).
+ * @return The computed partition ID for the given key.
+ */
+int inline map_single_key(std::uint64_t key, std::uint64_t a, std::uint64_t b, int shift) {
+    return (a * key + b) >> shift;
+}

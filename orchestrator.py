@@ -1,104 +1,170 @@
-### Orchestrator to run all experiments and collect results in a JSON file.
 import subprocess
 import json
 import os
 
-# parameters
-Ns = [1e2, 5e2, 1e3, 5e3, 1e4, 5e4, 1e5, 5e5, 1e6, 5e6, 1e7, 5e7]
-seeds = list(range(11))
-k = 16
-warmup = 5
+# ============================================================
+# Parameters
+# ============================================================
+
+Ns = [10_000, 100_000, 1_000_000, 5_000_000, 10_000_000]
+seeds = list(range(5))
+Ps = [1024]
+threads_list = [1, 2, 4, 8,16, 32, 64]
+max_key = 100_000
 
 results = []
 os.makedirs("results", exist_ok=True)
 
-def run_and_read_json(executable, N, k, seed, warmup):
-    """Run experiments and collect results in a JSON file"""
-    subprocess.run(
-        [executable, str(N), str(k), str(seed), str(warmup), "--json", "--print"],
-        check=True
-    )
 
-    filename = f"result_n{N}_k{k}.json"
+# ============================================================
+# Helpers
+# ============================================================
 
-    with open(filename) as f:
-        data = json.load(f)
+def parse_output(stdout: str):
+    """
+    Parse the stdout produced by hashjoin_seq / hashjoin_par.
+    Expected lines like:
+        NR=...
+        join_count=...
+        checksum1=...
+        checksum2=...
+        time_sec=...
+    """
+    parsed = {}
 
-    os.remove(filename)
+    for line in stdout.strip().splitlines():
+        line = line.strip()
 
-    return data
+        if line.startswith("NR="):
+            # Example:
+            # NR=10000 NS=10000 P=1024 seed=1 [0, 1000)
+            tokens = line.split()
+            for token in tokens:
+                if token.startswith("NR="):
+                    parsed["NR"] = int(token.split("=")[1])
+                elif token.startswith("NS="):
+                    parsed["NS"] = int(token.split("=")[1])
+                elif token.startswith("P="):
+                    parsed["P"] = int(token.split("=")[1])
+                elif token.startswith("T="):
+                    parsed["T"] = int(token.split("=")[1])
+                elif token.startswith("seed="):
+                    parsed["seed"] = int(token.split("=")[1])
+
+        elif line.startswith("join_count="):
+            parsed["join_count"] = int(line.split("=", 1)[1])
+
+        elif line.startswith("checksum1="):
+            parsed["checksum1"] = int(line.split("=", 1)[1])
+
+        elif line.startswith("checksum2="):
+            parsed["checksum2"] = int(line.split("=", 1)[1])
+
+        elif line.startswith("time_sec="):
+            parsed["time_sec"] = float(line.split("=", 1)[1])
+
+        elif line.startswith("naive_join_count="):
+            parsed["naive_join_count"] = int(line.split("=", 1)[1])
+
+        elif line.startswith("naive_checksum1="):
+            parsed["naive_checksum1"] = int(line.split("=", 1)[1])
+
+        elif line.startswith("naive_checksum2="):
+            parsed["naive_checksum2"] = int(line.split("=", 1)[1])
+
+    return parsed
 
 
-for N in Ns:
-    N = int(N)
-    for seed in seeds:
-        print(f"Running N={N}, seed={seed}")
+def run_seq(nr, ns, seed, max_key, p):
+    cmd = [
+        "./build/hashjoin_seq",
+        "-nr", str(nr),
+        "-ns", str(ns),
+        "-seed", str(seed),
+        "-max-key", str(max_key),
+        "-p", str(p),
+    ]
 
-        base = run_and_read_json("./build/main_baseline", N, k, seed, warmup)
-        vec  = run_and_read_json("./build/main_autovec", N, k, seed, warmup)
-        avx  = run_and_read_json("./build/main_avx", N, k, seed, warmup)
-        cuda = run_and_read_json("./build/main_cuda", N, k, seed, warmup)
+    completed = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return parse_output(completed.stdout)
 
-        base_time = base["time"]
-        vec_time  = vec["time"]
-        avx_time  = avx["time"]
-        cuda_time = cuda["time"]
 
-        # CUDA detailed times
-        cuda_h2d    = cuda.get("time_h2d", 0)
-        cuda_kernel = cuda.get("time_kernel", 0)
-        cuda_d2h    = cuda.get("time_d2h", 0)
+def run_par(nr, ns, seed, max_key, p, t):
+    cmd = [
+        "./build/hashjoin_par",
+        "-nr", str(nr),
+        "-ns", str(ns),
+        "-seed", str(seed),
+        "-max-key", str(max_key),
+        "-p", str(p),
+        "-t", str(t),
+    ]
 
-        # Throughput (Melem/s)
-        throughput_base = N / base_time
-        throughput_vec  = N / vec_time
-        throughput_avx  = N / avx_time
-        throughput_cuda_total  = N / cuda_time if cuda_time > 0 else 0
-        throughput_cuda_kernel = N / cuda_kernel if cuda_kernel > 0 else 0
+    completed = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return parse_output(completed.stdout)
 
-        base_checksum = base["checksum"]
-        vec_checksum  = vec["checksum"]
-        avx_checksum  = avx["checksum"]
-        cuda_checksum = cuda["checksum"]
 
-        correct_checksum = (base_checksum == vec_checksum == avx_checksum == cuda_checksum)
+# ============================================================
+# Experiments
+# ============================================================
 
-        correct_array = True
-        if N < 500:
-            base_map = base.get("mapping", [])
-            vec_map  = vec.get("mapping", [])
-            avx_map  = avx.get("mapping", [])
-            cuda_map = cuda.get("mapping", [])
-            correct_array = (base_map == vec_map == avx_map == cuda_map)
+for p in Ps:
+    for N in Ns:
+        nr = int(N)
+        ns = int(N)
 
-        results.append({
-            "N": N,
-            "seed": seed,
-            "k": k,
+        for seed in seeds:
+            print(f"Running SEQ  NR={nr}, NS={ns}, P={p}, seed={seed}")
+            seq = run_seq(nr, ns, seed, max_key, p)
 
-            "time_baseline": base_time,
-            "time_autovec": vec_time,
-            "time_avx": avx_time,
-            "time_cuda_total": cuda_time,
+            seq_time = seq["time_sec"]
 
-            "time_cuda_h2d": cuda_h2d,
-            "time_cuda_kernel": cuda_kernel,
-            "time_cuda_d2h": cuda_d2h,
+            for t in threads_list:
+                print(f"Running PAR  NR={nr}, NS={ns}, P={p}, seed={seed}, T={t}")
+                par = run_par(nr, ns, seed, max_key, p, t)
 
-            "throughput_baseline": throughput_base,
-            "throughput_autovec": throughput_vec,
-            "throughput_avx": throughput_avx,
-            "throughput_cuda_total": throughput_cuda_total,
-            "throughput_cuda_kernel": throughput_cuda_kernel,
+                par_time = par["time_sec"]
 
-            "speedup_autovec": base_time / vec_time,
-            "speedup_avx": base_time / avx_time,
-            "speedup_cuda_total": base_time / cuda_time,
-            "speedup_cuda_kernel": base_time / cuda_kernel if cuda_kernel > 0 else 0,
+                checksum_correct = (
+                    seq["join_count"] == par["join_count"]
+                    and seq["checksum1"] == par["checksum1"]
+                    and seq["checksum2"] == par["checksum2"]
+                )
 
-            "checksum_correct": correct_checksum,
-            "array_correct": correct_array
-        })
+                result = {
+                    "NR": nr,
+                    "NS": ns,
+                    "P": p,
+                    "seed": seed,
+                    "max_key": max_key,
+                    "threads": t,
+
+                    "time_seq": seq_time,
+                    "time_par": par_time,
+                    "speedup": seq_time / par_time if par_time > 0 else 0.0,
+
+                    "join_count_seq": seq["join_count"],
+                    "join_count_par": par["join_count"],
+                    "checksum1_seq": seq["checksum1"],
+                    "checksum1_par": par["checksum1"],
+                    "checksum2_seq": seq["checksum2"],
+                    "checksum2_par": par["checksum2"],
+
+                    "checksum_correct": checksum_correct
+                }
+
+                # If present, also store naive verifier outputs
+                if "naive_join_count" in seq:
+                    result["naive_join_count"] = seq["naive_join_count"]
+                    result["naive_checksum1"] = seq["naive_checksum1"]
+                    result["naive_checksum2"] = seq["naive_checksum2"]
+
+                results.append(result)
+
+
+# ============================================================
+# Save JSON
+# ============================================================
 
 with open("results/results.json", "w") as f:
     json.dump(results, f, indent=4)

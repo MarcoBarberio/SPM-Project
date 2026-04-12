@@ -19,81 +19,32 @@ with open("results/results.json") as f:
 df = pd.DataFrame(data)
 
 # =========================
-# CALCOLI
+# CONTROLLI / NORMALIZZAZIONE
 # =========================
-df["throughput_baseline"] = df["N"] / df["time_baseline"]
-df["throughput_autovec"] = df["N"] / df["time_autovec"]
-df["throughput_avx"] = df["N"] / df["time_avx"]
+required_cols = [
+    "NR", "NS", "P", "seed", "max_key", "threads",
+    "time_seq", "time_par", "speedup", "checksum_correct"
+]
 
-df["throughput_cuda_total"] = df["N"] / df["time_cuda_total"]
-df["throughput_cuda_kernel"] = df["N"] / df["time_cuda_kernel"]
+missing = [c for c in required_cols if c not in df.columns]
+if missing:
+    raise ValueError(f"Missing columns in results.json: {missing}")
 
-df["speedup_autovec"] = df["time_baseline"] / df["time_autovec"]
-df["speedup_avx"] = df["time_baseline"] / df["time_avx"]
-df["speedup_cuda_total"] = df["time_baseline"] / df["time_cuda_total"]
-df["speedup_cuda_kernel"] = df["time_baseline"] / df["time_cuda_kernel"]
+# chiave di dimensione problema per comodità
+# assumiamo spesso NR == NS, ma teniamo comunque entrambe
+df["N"] = df["NR"]
+
+# throughput join/s
+df["throughput_seq"] = df["NR"] / df["time_seq"]
+df["throughput_par"] = df["NR"] / df["time_par"]
+
+# weak scaling efficiency rispetto a T=1
+# la calcoliamo dopo in una tabella dedicata
 
 # =========================
 # SALVA RAW CSV
 # =========================
 df.to_csv("results/tables/raw_results.csv", index=False)
-
-# =========================
-# TABELLA RIASSUNTIVA
-# =========================
-summary = df.groupby("N").agg({
-    "time_baseline": ["median", "std"],
-    "time_autovec": ["median", "std"],
-    "time_avx": ["median", "std"],
-    "time_cuda_total": ["median", "std"],
-    "time_cuda_kernel": ["median", "std"],
-    "time_cuda_h2d": ["median", "std"],
-    "time_cuda_d2h": ["median", "std"],
-    "speedup_autovec": ["median", "std"],
-    "speedup_avx": ["median", "std"],
-    "speedup_cuda_total": ["median", "std"],
-    "speedup_cuda_kernel": ["median", "std"],
-    "throughput_avx": ["median", "std"],
-    "throughput_cuda_total": ["median", "std"],
-    "throughput_cuda_kernel": ["median", "std"]
-}).reset_index()
-
-summary.columns = [
-    "N",
-    "baseline_median", "baseline_std",
-    "autovec_median", "autovec_std",
-    "avx_median", "avx_std",
-    "cuda_total_median", "cuda_total_std",
-    "cuda_kernel_median", "cuda_kernel_std",
-    "cuda_h2d_median", "cuda_h2d_std",
-    "cuda_d2h_median", "cuda_d2h_std",
-    "speedup_autovec_median", "speedup_autovec_std",
-    "speedup_avx_median", "speedup_avx_std",
-    "speedup_cuda_total_median", "speedup_cuda_total_std",
-    "speedup_cuda_kernel_median", "speedup_cuda_kernel_std",
-    "throughput_avx_median", "throughput_avx_std",
-    "throughput_cuda_total_median", "throughput_cuda_total_std",
-    "throughput_cuda_kernel_median", "throughput_cuda_kernel_std"
-]
-
-# =========================
-# CONVERSIONI UNITÀ
-# =========================
-# tempi in microsecondi
-for col in ["baseline_median","baseline_std",
-            "autovec_median","autovec_std",
-            "avx_median","avx_std",
-            "cuda_total_median","cuda_total_std",
-            "cuda_kernel_median","cuda_kernel_std",
-            "cuda_h2d_median","cuda_h2d_std",
-            "cuda_d2h_median","cuda_d2h_std"]:
-    summary[col] *= 1e6
-
-# throughput in milioni elem/s
-for col in ["throughput_avx_median","throughput_avx_std",
-            "throughput_cuda_total_median","throughput_cuda_total_std",
-            "throughput_cuda_kernel_median","throughput_cuda_kernel_std"]:
-    summary[col] /= 1e6
 
 # =========================
 # FORMATTAZIONE
@@ -105,147 +56,285 @@ def fmt_mean(mean, decimals=2, suffix=""):
     return f"{mean:.{decimals}f}{suffix}"
 
 # =========================
-# TABELLA CPU
+# TABELLA 1: SEQ VS PAR PER (N, threads)
 # =========================
-formatted_cpu = pd.DataFrame({
-    "N": summary["N"].astype(int),
-    "baseline": [fmt_mean_std(m, s, unit="µs") for m, s in zip(summary["baseline_median"], summary["baseline_std"])],
-    "autovec": [fmt_mean_std(m, s, unit="µs") for m, s in zip(summary["autovec_median"], summary["autovec_std"])],
-    "AVX2": [fmt_mean_std(m, s, unit="µs") for m, s in zip(summary["avx_median"], summary["avx_std"])],
-    "speedup autovec": [fmt_mean(m, suffix="x") for m in summary["speedup_autovec_median"]],
-    "speedup AVX2": [fmt_mean(m, suffix="x") for m in summary["speedup_avx_median"]],
-    "throughput AVX2": [fmt_mean_std(m, s, unit="Melem/s") for m, s in zip(summary["throughput_avx_median"], summary["throughput_avx_std"])]
+summary_by_n_t = df.groupby(["N", "threads"]).agg({
+    "time_seq": ["median", "std"],
+    "time_par": ["median", "std"],
+    "speedup": ["median", "std"],
+    "throughput_seq": ["median", "std"],
+    "throughput_par": ["median", "std"],
+    "checksum_correct": ["min"]
+}).reset_index()
+
+summary_by_n_t.columns = [
+    "N", "threads",
+    "time_seq_median", "time_seq_std",
+    "time_par_median", "time_par_std",
+    "speedup_median", "speedup_std",
+    "throughput_seq_median", "throughput_seq_std",
+    "throughput_par_median", "throughput_par_std",
+    "checksum_correct"
+]
+
+# conversioni unità
+for col in [
+    "time_seq_median", "time_seq_std",
+    "time_par_median", "time_par_std"
+]:
+    summary_by_n_t[col] *= 1e6   # microsecondi
+
+for col in [
+    "throughput_seq_median", "throughput_seq_std",
+    "throughput_par_median", "throughput_par_std"
+]:
+    summary_by_n_t[col] /= 1e6   # milioni di record/s
+
+formatted_seq_par = pd.DataFrame({
+    "N": summary_by_n_t["N"].astype(int),
+    "threads": summary_by_n_t["threads"].astype(int),
+    "seq time": [
+        fmt_mean_std(m, s, unit="µs")
+        for m, s in zip(summary_by_n_t["time_seq_median"], summary_by_n_t["time_seq_std"])
+    ],
+    "par time": [
+        fmt_mean_std(m, s, unit="µs")
+        for m, s in zip(summary_by_n_t["time_par_median"], summary_by_n_t["time_par_std"])
+    ],
+    "speedup": [
+        fmt_mean_std(m, s)
+        for m, s in zip(summary_by_n_t["speedup_median"], summary_by_n_t["speedup_std"])
+    ],
+    "seq throughput": [
+        fmt_mean_std(m, s, unit="Mrec/s")
+        for m, s in zip(summary_by_n_t["throughput_seq_median"], summary_by_n_t["throughput_seq_std"])
+    ],
+    "par throughput": [
+        fmt_mean_std(m, s, unit="Mrec/s")
+        for m, s in zip(summary_by_n_t["throughput_par_median"], summary_by_n_t["throughput_par_std"])
+    ],
+    "checksum correct": summary_by_n_t["checksum_correct"].astype(bool)
 })
 
-formatted_cpu.to_csv("results/tables/summary_cpu.csv", index=False)
+formatted_seq_par.to_csv("results/tables/summary_seq_par.csv", index=False)
 
-# =========================
-# TABELLA CUDA
-# =========================
-formatted_cuda = pd.DataFrame({
-    "N": summary["N"].astype(int),
-    "baseline": [fmt_mean_std(m, s, unit="µs") for m, s in zip(summary["baseline_median"], summary["baseline_std"])],
-    "CUDA total": [fmt_mean_std(m, s, unit="µs") for m, s in zip(summary["cuda_total_median"], summary["cuda_total_std"])],
-    "CUDA kernel": [fmt_mean_std(m, s, unit="µs") for m, s in zip(summary["cuda_kernel_median"], summary["cuda_kernel_std"])],
-    "H2D": [fmt_mean_std(m, s, unit="µs") for m, s in zip(summary["cuda_h2d_median"], summary["cuda_h2d_std"])],
-    "D2H": [fmt_mean_std(m, s, unit="µs") for m, s in zip(summary["cuda_d2h_median"], summary["cuda_d2h_std"])],
-    "speedup CUDA total": [fmt_mean(m, suffix="x") for m in summary["speedup_cuda_total_median"]],
-    "speedup CUDA kernel": [fmt_mean(m, suffix="x") for m in summary["speedup_cuda_kernel_median"]],
-    "throughput CUDA total": [fmt_mean_std(m, s, unit="Melem/s") for m, s in zip(summary["throughput_cuda_total_median"], summary["throughput_cuda_total_std"])],
-    "throughput CUDA kernel": [fmt_mean_std(m, s, unit="Melem/s") for m, s in zip(summary["throughput_cuda_kernel_median"], summary["throughput_cuda_kernel_std"])]
-})
-
-formatted_cuda.to_csv("results/tables/summary_cuda.csv", index=False)
-# =========================
-# TABELLE LATEX
-# =========================
-latex_cpu = r"""\begin{table}[htbp]
+latex_seq_par = r"""\begin{table}[htbp]
 \centering
 \small
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.1}
 \resizebox{\textwidth}{!}{%
-""" + "\n" + formatted_cpu.to_latex(index=False, escape=True) + r"""%
+""" + "\n" + formatted_seq_par.to_latex(index=False, escape=True) + r"""%
 }
-\caption{Performance comparison between baseline, autovectorized and AVX2 implementations. Median execution time over multiple runs is reported.}
-\label{tab:cpu-performance}
+\caption{Sequential vs parallel partitioned hash join. Median and standard deviation over multiple runs.}
+\label{tab:seq-par-performance}
 \end{table}
 """
 
-with open("results/tables/summary_cpu.tex", "w", encoding="utf-8") as f:
-    f.write(latex_cpu)
+with open("results/tables/summary_seq_par.tex", "w", encoding="utf-8") as f:
+    f.write(latex_seq_par)
 
-latex_cuda = r"""\begin{table}[htbp]
+# =========================
+# TABELLA 2: STRONG SCALING
+# =========================
+# Per ogni N, variamo solo i thread
+strong = df.groupby(["N", "threads"]).agg({
+    "time_par": ["median", "std"],
+    "speedup": ["median", "std"],
+    "checksum_correct": ["min"]
+}).reset_index()
+
+strong.columns = [
+    "N", "threads",
+    "time_par_median", "time_par_std",
+    "speedup_median", "speedup_std",
+    "checksum_correct"
+]
+
+strong["efficiency_median"] = strong["speedup_median"] / strong["threads"]
+
+strong["time_par_median"] *= 1e6
+strong["time_par_std"] *= 1e6
+
+formatted_strong = pd.DataFrame({
+    "N": strong["N"].astype(int),
+    "threads": strong["threads"].astype(int),
+    "par time": [
+        fmt_mean_std(m, s, unit="µs")
+        for m, s in zip(strong["time_par_median"], strong["time_par_std"])
+    ],
+    "speedup": [
+        fmt_mean_std(m, s)
+        for m, s in zip(strong["speedup_median"], strong["speedup_std"])
+    ],
+    "efficiency": [
+        fmt_mean(m, suffix="")
+        for m in strong["efficiency_median"]
+    ],
+    "checksum correct": strong["checksum_correct"].astype(bool)
+})
+
+formatted_strong.to_csv("results/tables/summary_strong_scaling.csv", index=False)
+
+latex_strong = r"""\begin{table}[htbp]
 \centering
 \small
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.1}
 \resizebox{\textwidth}{!}{%
-""" + "\n" + formatted_cuda.to_latex(index=False, escape=True) + r"""%
+""" + "\n" + formatted_strong.to_latex(index=False, escape=True) + r"""%
 }
-\caption{CUDA performance breakdown. Total time includes host-device transfers.}
-\label{tab:cuda-performance}
+\caption{Strong scaling results for the parallel partitioned hash join.}
+\label{tab:strong-scaling}
 \end{table}
 """
 
-with open("results/tables/summary_cuda.tex", "w", encoding="utf-8") as f:
-    f.write(latex_cuda)
+with open("results/tables/summary_strong_scaling.tex", "w", encoding="utf-8") as f:
+    f.write(latex_strong)
 
-with open("results/tables/summary_cuda.tex", "w", encoding="utf-8") as f:
-    f.write(latex_cuda)
+# =========================
+# TABELLA 3: WEAK SCALING
+# =========================
+# Assumiamo che i dati weak scaling abbiano N che cresce con i thread.
+# Calcoliamo l'efficienza weak rispetto al caso T=1 con stesso carico per thread.
+weak_base = df[df["threads"] == 1].groupby("N").agg({
+    "time_par": "median"
+}).reset_index().rename(columns={"time_par": "base_time_t1"})
+
+weak = df.groupby(["N", "threads"]).agg({
+    "time_par": ["median", "std"],
+    "checksum_correct": ["min"]
+}).reset_index()
+
+weak.columns = [
+    "N", "threads",
+    "time_par_median", "time_par_std",
+    "checksum_correct"
+]
+
+# per stimare weak scaling, prendiamo come baseline il più piccolo N con T=1
+if not weak_base.empty:
+    reference_time = weak_base.sort_values("N").iloc[0]["base_time_t1"]
+    weak["weak_efficiency"] = reference_time / weak["time_par_median"]
+else:
+    weak["weak_efficiency"] = np.nan
+
+weak["time_par_median"] *= 1e6
+weak["time_par_std"] *= 1e6
+
+formatted_weak = pd.DataFrame({
+    "N": weak["N"].astype(int),
+    "threads": weak["threads"].astype(int),
+    "par time": [
+        fmt_mean_std(m, s, unit="µs")
+        for m, s in zip(weak["time_par_median"], weak["time_par_std"])
+    ],
+    "weak efficiency": [
+        fmt_mean(m) if pd.notna(m) else "nan"
+        for m in weak["weak_efficiency"]
+    ],
+    "checksum correct": weak["checksum_correct"].astype(bool)
+})
+
+formatted_weak.to_csv("results/tables/summary_weak_scaling.csv", index=False)
+
+latex_weak = r"""\begin{table}[htbp]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\resizebox{\textwidth}{!}{%
+""" + "\n" + formatted_weak.to_latex(index=False, escape=True) + r"""%
+}
+\caption{Weak scaling results for the parallel partitioned hash join.}
+\label{tab:weak-scaling}
+\end{table}
+"""
+
+with open("results/tables/summary_weak_scaling.tex", "w", encoding="utf-8") as f:
+    f.write(latex_weak)
 
 # =========================
 # GRAFICI
 # =========================
 
-# Time vs N
+# 1) Time seq vs par al variare di N, per ogni T
+for t in sorted(df["threads"].unique()):
+    tmp = summary_by_n_t[summary_by_n_t["threads"] == t].sort_values("N")
+    plt.figure()
+    plt.errorbar(tmp["N"], tmp["time_seq_median"], yerr=tmp["time_seq_std"], label="seq")
+    plt.errorbar(tmp["N"], tmp["time_par_median"], yerr=tmp["time_par_std"], label=f"par T={t}")
+    plt.xscale("log")
+    plt.xlabel("N")
+    plt.ylabel("Time (µs)")
+    plt.title(f"Sequential vs Parallel Time (T={t})")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(f"results/plots/time_seq_vs_par_t{t}.png")
+    plt.close()
+
+# 2) Speedup vs threads per ogni N
+for n in sorted(df["N"].unique()):
+    tmp = strong[strong["N"] == n].sort_values("threads")
+    plt.figure()
+    plt.errorbar(tmp["threads"], tmp["speedup_median"], yerr=tmp["speedup_std"], label=f"N={n}")
+    plt.xlabel("Threads")
+    plt.ylabel("Speedup")
+    plt.title(f"Strong Scaling Speedup (N={n})")
+    plt.grid(True)
+    plt.legend()
+    plt.savefig(f"results/plots/speedup_vs_threads_n{int(n)}.png")
+    plt.close()
+
+# 3) Efficiency vs threads per ogni N
+for n in sorted(df["N"].unique()):
+    tmp = strong[strong["N"] == n].sort_values("threads")
+    plt.figure()
+    plt.plot(tmp["threads"], tmp["efficiency_median"], marker="o", label=f"N={n}")
+    plt.xlabel("Threads")
+    plt.ylabel("Efficiency")
+    plt.title(f"Strong Scaling Efficiency (N={n})")
+    plt.grid(True)
+    plt.legend()
+    plt.savefig(f"results/plots/efficiency_vs_threads_n{int(n)}.png")
+    plt.close()
+
+# 4) Throughput par vs N per ogni T
+for t in sorted(summary_by_n_t["threads"].unique()):
+    tmp = summary_by_n_t[summary_by_n_t["threads"] == t].sort_values("N")
+    plt.figure()
+    plt.errorbar(tmp["N"], tmp["throughput_par_median"], yerr=tmp["throughput_par_std"], label=f"T={t}")
+    plt.xscale("log")
+    plt.xlabel("N")
+    plt.ylabel("Throughput (Mrec/s)")
+    plt.title(f"Parallel Throughput vs N (T={t})")
+    plt.grid(True)
+    plt.legend()
+    plt.savefig(f"results/plots/throughput_vs_n_t{t}.png")
+    plt.close()
+
+# 5) Weak scaling: time vs threads
+tmp = weak.sort_values("threads")
 plt.figure()
-plt.errorbar(summary["N"], summary["baseline_median"], yerr=summary["baseline_std"], label="baseline")
-plt.errorbar(summary["N"], summary["autovec_median"], yerr=summary["autovec_std"], label="autovec")
-plt.errorbar(summary["N"], summary["avx_median"], yerr=summary["avx_std"], label="AVX2")
-plt.errorbar(summary["N"], summary["cuda_total_median"], yerr=summary["cuda_total_std"], label="CUDA total")
-plt.xscale("log")
-plt.xlabel("N")
+plt.errorbar(tmp["threads"], tmp["time_par_median"], yerr=tmp["time_par_std"], label="weak scaling")
+plt.xlabel("Threads")
 plt.ylabel("Time (µs)")
-plt.title("Execution Time vs N")
-plt.legend()
+plt.title("Weak Scaling Time")
 plt.grid(True)
-plt.savefig("results/plots/time_vs_n.png")
+plt.legend()
+plt.savefig("results/plots/weak_scaling_time.png")
 plt.close()
 
-# Throughput vs N
+# 6) Weak scaling efficiency vs threads
+tmp = weak.sort_values("threads")
 plt.figure()
-plt.plot(summary["N"], summary["throughput_avx_median"], label="AVX2")
-plt.plot(summary["N"], summary["throughput_cuda_kernel_median"], label="CUDA kernel")
-plt.xscale("log")
-plt.xlabel("N")
-plt.ylabel("Throughput (Melem/s)")
-plt.title("Throughput vs N")
-plt.legend()
+plt.plot(tmp["threads"], tmp["weak_efficiency"], marker="o", label="weak efficiency")
+plt.xlabel("Threads")
+plt.ylabel("Weak Scaling Efficiency")
+plt.title("Weak Scaling Efficiency")
 plt.grid(True)
-plt.savefig("results/plots/throughput_vs_n.png")
-plt.close()
-
-# Speedup vs N
-plt.figure()
-plt.plot(summary["N"], summary["speedup_avx_median"], label="AVX2")
-plt.plot(summary["N"], summary["speedup_cuda_total_median"], label="CUDA total")
-plt.plot(summary["N"], summary["speedup_cuda_kernel_median"], label="CUDA kernel")
-plt.xscale("log")
-plt.xlabel("N")
-plt.ylabel("Speedup")
-plt.title("Speedup vs N")
 plt.legend()
-plt.grid(True)
-plt.savefig("results/plots/speedup_vs_n.png")
-plt.close()
-
-# CUDA total vs kernel
-plt.figure()
-plt.plot(summary["N"], summary["baseline_median"], label="CPU baseline")
-plt.plot(summary["N"], summary["cuda_total_median"], label="CUDA total")
-plt.plot(summary["N"], summary["cuda_kernel_median"], label="CUDA kernel")
-plt.xscale("log")
-plt.xlabel("N")
-plt.ylabel("Time (µs)")
-plt.title("CUDA Total vs Kernel vs CPU")
-plt.legend()
-plt.grid(True)
-plt.savefig("results/plots/cuda_total_vs_kernel.png")
-plt.close()
-
-# CUDA breakdown
-plt.figure()
-plt.plot(summary["N"], summary["cuda_h2d_median"], label="H2D")
-plt.plot(summary["N"], summary["cuda_kernel_median"], label="Kernel")
-plt.plot(summary["N"], summary["cuda_d2h_median"], label="D2H")
-plt.xscale("log")
-plt.xlabel("N")
-plt.ylabel("Time (µs)")
-plt.title("CUDA Time Breakdown")
-plt.legend()
-plt.grid(True)
-plt.savefig("results/plots/cuda_breakdown.png")
+plt.savefig("results/plots/weak_scaling_efficiency.png")
 plt.close()
 
 print("Analysis complete. Tables and plots saved in results/")
