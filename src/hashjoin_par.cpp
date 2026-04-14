@@ -1,5 +1,6 @@
 
 #include "mapping_baseline.hpp"
+#include "threadPool.hpp"
 #include "utilities.hpp"
 #include <atomic>
 #include <chrono>
@@ -12,23 +13,105 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <fstream>
+//a and b are fixed parameters for the hash function. In this case I use the same constants as splitmix64.
 
+#define a 0x9E3779B97F4A7C15ULL
+#define b 0xBF58476D1CE4E5B9ULL
 struct Record
 {
     std::uint64_t key{};
 };
+// ------------------------------------------------------------
+// Join result
+// ------------------------------------------------------------
+struct JoinResult
+{
+    std::uint64_t join_count = 0;
+    std::uint64_t checksum1 = 0;
+    std::uint64_t checksum2 = 0;
+};
+using Clock = std::chrono::steady_clock;
 
-static bool read_arg_u64(int argc, char** argv, const std::string& name, std::uint64_t& out)
+struct PartitionTimes
+{
+    double histogram = 0.0;
+    double prefix = 0.0;
+    double scatter = 0.0;
+    double total = 0.0;
+};
+
+struct PhaseTimes
+{
+    PartitionTimes R;
+    PartitionTimes S;
+    double join_local = 0.0;
+    double accumulation = 0.0;
+    double total = 0.0;
+};
+
+static inline double elapsed_sec(const Clock::time_point& t0, const Clock::time_point& t1)
+{
+    return std::chrono::duration<double>(t1 - t0).count();
+}
+
+static bool read_arg_string(int argc, char** argv, const std::string& name, std::string& out)
 {
     for (int i = 1; i + 1 < argc; ++i)
     {
         if (name == argv[i])
         {
-            out = std::strtoull(argv[i + 1], nullptr, 10);
+            out = argv[i + 1];
             return true;
         }
     }
     return false;
+}
+
+static void write_run_json_par(const std::string& path,
+                               std::size_t NR,
+                               std::size_t NS,
+                               std::uint32_t P,
+                               std::size_t T,
+                               std::uint64_t seed,
+                               std::uint64_t max_key,
+                               const JoinResult& result,
+                               const PhaseTimes& times)
+{
+    std::ofstream out(path);
+    if (!out)
+    {
+        std::cerr << "Error: cannot open JSON output file: " << path << "\n";
+        return;
+    }
+
+    out << "{\n";
+    out << "  \"mode\": \"par\",\n";
+    out << "  \"NR\": " << NR << ",\n";
+    out << "  \"NS\": " << NS << ",\n";
+    out << "  \"P\": " << P << ",\n";
+    out << "  \"T\": " << T << ",\n";
+    out << "  \"seed\": " << seed << ",\n";
+    out << "  \"max_key\": " << max_key << ",\n";
+
+    out << "  \"join_count\": " << result.join_count << ",\n";
+    out << "  \"checksum1\": " << result.checksum1 << ",\n";
+    out << "  \"checksum2\": " << result.checksum2 << ",\n";
+
+    out << "  \"time_histogram_R\": " << times.R.histogram << ",\n";
+    out << "  \"time_prefix_R\": " << times.R.prefix << ",\n";
+    out << "  \"time_scatter_R\": " << times.R.scatter << ",\n";
+    out << "  \"time_partition_R\": " << times.R.total << ",\n";
+
+    out << "  \"time_histogram_S\": " << times.S.histogram << ",\n";
+    out << "  \"time_prefix_S\": " << times.S.prefix << ",\n";
+    out << "  \"time_scatter_S\": " << times.S.scatter << ",\n";
+    out << "  \"time_partition_S\": " << times.S.total << ",\n";
+
+    out << "  \"time_join\": " << times.join_local << ",\n";
+    out << "  \"time_accumulation\": " << times.accumulation << ",\n";
+    out << "  \"time_total\": " << times.total << "\n";
+    out << "}\n";
 }
 static void usage(const char* prog)
 {
@@ -40,11 +123,24 @@ static void usage(const char* prog)
               << "  -seed       Deterministic seed\n"
               << "  -max-key    Keys are generated in [0, max-key)\n"
               << "  -p          Number of partitions (power of two required in this reference code)\n"
-              << "  -t          Number of threads\n";
+              << "  -t          Number of threads\n"
+              << "  -json       Optional path to save run information as JSON\n";
 }
 static bool is_power_of_two(std::uint32_t x)
 {
     return x != 0 && (x & (x - 1U)) == 0;
+}
+static bool read_arg_u64(int argc, char** argv, const std::string& name, std::uint64_t& out)
+{
+    for (int i = 1; i + 1 < argc; ++i)
+    {
+        if (name == argv[i])
+        {
+            out = std::strtoull(argv[i + 1], nullptr, 10);
+            return true;
+        }
+    }
+    return false;
 }
 
 static inline std::uint64_t splitmix64_mix(std::uint64_t x)
@@ -79,17 +175,14 @@ static std::vector<Record> generate_relation(std::size_t n, std::uint64_t seed, 
 
 static inline std::uint32_t compute_partition_id(std::uint64_t key, std::uint32_t p)
 {
-    // a and b are fixed parameters for the hash function. In this case I use the same constants as splitmix64.
-    const std::uint64_t a = 0x9E3779B97F4A7C15ULL;
-    const std::uint64_t b = 0xBF58476D1CE4E5B9ULL;
     int shift = 64 - static_cast<int>(std::log2(p));
     return map_single_key(key, a, b, shift);
 }
 
 struct HistogramData
 {
-    std::vector<std::size_t> hist;                        
-    std::vector<std::vector<std::size_t>> local_hists;   
+    std::vector<std::size_t> hist;
+    std::vector<std::vector<std::size_t>> local_hists;
 };
 
 // ------------------------------------------------------------
@@ -100,36 +193,36 @@ struct HistogramData
 //
 // hist[pid] = number of records whose key maps to pid
 //
-static HistogramData compute_histogram(const std::vector<Record>& rel,
-                                       std::uint32_t p,
+static HistogramData compute_histogram(const std::vector<Record>& rel, std::uint32_t p, threadPool& pool,
                                        std::size_t nthreads)
 {
     const std::size_t n = rel.size();
 
-    std::vector<std::vector<std::size_t>> local_hists(
-        nthreads, std::vector<std::size_t>(p, 0));
+    std::vector<std::vector<std::size_t>> local_hists(nthreads, std::vector<std::size_t>(p, 0));
 
-    std::vector<std::thread> threads;
-    threads.reserve(nthreads);
-
-    auto worker = [&](std::size_t tid)
-    {
-        const std::size_t chunk = (n + nthreads - 1) / nthreads;
-        const std::size_t begin = tid * chunk;
-        const std::size_t end   = std::min(begin + chunk, n);
-
-        auto& hist = local_hists[tid];
-        for (std::size_t i = begin; i < end; ++i)
-        {
-            const std::uint32_t pid = compute_partition_id(rel[i].key, p);
-            ++hist[pid];
-        }
-    };
+    std::vector<std::future<void>> futures;
+    futures.reserve(nthreads);
 
     for (std::size_t tid = 0; tid < nthreads; ++tid)
-        threads.emplace_back(worker, tid);
-    for (auto& th : threads)
-        th.join();
+    {
+        futures.emplace_back(pool.submit(
+            [&, tid]
+            {
+                const std::size_t chunk = (n + nthreads - 1) / nthreads;
+                const std::size_t begin = tid * chunk;
+                const std::size_t end = std::min(begin + chunk, n);
+
+                auto& hist = local_hists[tid];
+                for (std::size_t i = begin; i < end; ++i)
+                {
+                    const std::uint32_t pid = compute_partition_id(rel[i].key, p);
+                    ++hist[pid];
+                }
+            }));
+    }
+
+    for (auto& f : futures)
+        f.get();
 
     std::vector<std::size_t> hist(p, 0);
     for (std::uint32_t pid = 0; pid < p; ++pid)
@@ -177,18 +270,15 @@ static std::vector<std::size_t> exclusive_prefix_sum(const std::vector<std::size
 //
 // We use a write cursor per partition, initialized from the begin offsets.
 //
-static std::vector<Record> scatter_partitioned(const std::vector<Record>& rel,
-                                               std::uint32_t p,
+static std::vector<Record> scatter_partitioned(const std::vector<Record>& rel, std::uint32_t p,
                                                const std::vector<std::size_t>& begin,
                                                const std::vector<std::vector<std::size_t>>& local_hists,
-                                               std::size_t nthreads)
+                                               threadPool& pool, std::size_t nthreads)
 {
     const std::size_t n = rel.size();
     std::vector<Record> out(n);
 
-    // thread_begin[tid][pid] = primo indice dove il thread tid può scrivere
-    std::vector<std::vector<std::size_t>> thread_begin(
-        nthreads, std::vector<std::size_t>(p, 0));
+    std::vector<std::vector<std::size_t>> thread_begin(nthreads, std::vector<std::size_t>(p, 0));
 
     for (std::uint32_t pid = 0; pid < p; ++pid)
     {
@@ -200,30 +290,31 @@ static std::vector<Record> scatter_partitioned(const std::vector<Record>& rel,
         }
     }
 
-    std::vector<std::thread> threads;
-    threads.reserve(nthreads);
-
-    auto worker = [&](std::size_t tid)
-    {
-        const std::size_t chunk = (n + nthreads - 1) / nthreads;
-        const std::size_t i_begin = tid * chunk;
-        const std::size_t i_end   = std::min(i_begin + chunk, n);
-
-        // cursori privati del thread
-        std::vector<std::size_t> next = thread_begin[tid];
-
-        for (std::size_t i = i_begin; i < i_end; ++i)
-        {
-            const auto& rec = rel[i];
-            const std::uint32_t pid = compute_partition_id(rec.key, p);
-            out[next[pid]++] = rec;
-        }
-    };
+    std::vector<std::future<void>> futures;
+    futures.reserve(nthreads);
 
     for (std::size_t tid = 0; tid < nthreads; ++tid)
-        threads.emplace_back(worker, tid);
-    for (auto& th : threads)
-        th.join();
+    {
+        futures.emplace_back(pool.submit(
+            [&, tid]
+            {
+                const std::size_t chunk = (n + nthreads - 1) / nthreads;
+                const std::size_t i_begin = tid * chunk;
+                const std::size_t i_end = std::min(i_begin + chunk, n);
+
+                std::vector<std::size_t> next = thread_begin[tid];
+
+                for (std::size_t i = i_begin; i < i_end; ++i)
+                {
+                    const auto& rec = rel[i];
+                    const std::uint32_t pid = compute_partition_id(rec.key, p);
+                    out[next[pid]++] = rec;
+                }
+            }));
+    }
+
+    for (auto& f : futures)
+        f.get();
 
     return out;
 }
@@ -256,32 +347,33 @@ struct PartitionedRelation
 // After this phase, all records belonging to the same partition
 // are stored contiguously in memory, enabling independent processing.
 //
-static PartitionedRelation partition_relation(const std::vector<Record>& rel,
-                                              std::uint32_t p,
-                                              std::size_t nthreads)
+static PartitionedRelation partition_relation(const std::vector<Record>& rel, std::uint32_t p, threadPool& pool,
+                                              std::size_t nthreads, PartitionTimes& times)
 {
-    const HistogramData hdata = compute_histogram(rel, p, nthreads);
+    const auto t0 = Clock::now();
+    const HistogramData hdata = compute_histogram(rel, p, pool, nthreads);
+    const auto t1 = Clock::now();
+
     const auto begin = exclusive_prefix_sum(hdata.hist);
-    auto data = scatter_partitioned(rel, p, begin, hdata.local_hists, nthreads);
+    const auto t2 = Clock::now();
+
+    auto data = scatter_partitioned(rel, p, begin, hdata.local_hists, pool, nthreads);
+    const auto t3 = Clock::now();
 
     std::vector<std::size_t> end(p, 0);
     for (std::uint32_t pid = 0; pid < p; ++pid)
     {
         end[pid] = begin[pid] + hdata.hist[pid];
     }
+    const auto t4 = Clock::now();
+
+    times.histogram = elapsed_sec(t0, t1);
+    times.prefix    = elapsed_sec(t1, t2);
+    times.scatter   = elapsed_sec(t2, t3);
+    times.total     = elapsed_sec(t0, t4);
 
     return PartitionedRelation{.data = std::move(data), .begin = begin, .end = end};
 }
-
-// ------------------------------------------------------------
-// Join result
-// ------------------------------------------------------------
-struct JoinResult
-{
-    std::uint64_t join_count = 0;
-    std::uint64_t checksum1 = 0;
-    std::uint64_t checksum2 = 0;
-};
 
 // ------------------------------------------------------------
 // Local join on one partition
@@ -369,47 +461,64 @@ static JoinResult join_one_partition(const PartitionedRelation& Rpart, const Par
 // This property is the basis for parallelization in Module 2.
 //
 static JoinResult partitioned_hash_join_parallel(const std::vector<Record>& R, const std::vector<Record>& S,
-                                                 std::uint32_t p, std::size_t nthreads)
+                                                 std::uint32_t p, threadPool& pool, std::size_t nthreads,
+                                                 PhaseTimes& times)
 {
-    const PartitionedRelation Rpart = partition_relation(R, p, nthreads);
-    const PartitionedRelation Spart = partition_relation(S, p, nthreads);
+    const auto t0 = Clock::now();
+
+    const PartitionedRelation Rpart = partition_relation(R, p, pool, nthreads, times.R);
+    const PartitionedRelation Spart = partition_relation(S, p, pool, nthreads, times.S);
 
     std::atomic<std::uint32_t> next_pid{0};
     std::vector<JoinResult> partials(nthreads);
-    std::vector<std::thread> threads;
-    threads.reserve(nthreads);
+    std::vector<std::future<void>> futures;
+    futures.reserve(nthreads);
 
-    auto worker = [&](std::size_t tid)
-    {
-        JoinResult local{};
-
-        while (true)
-        {
-            const std::uint32_t pid = next_pid.fetch_add(1);
-            if (pid >= p)
-                break;
-
-            const JoinResult jr = join_one_partition(Rpart, Spart, pid);
-            local.join_count += jr.join_count;
-            local.checksum1 += jr.checksum1;
-            local.checksum2 += jr.checksum2;
-        }
-
-        partials[tid] = local;
-    };
+    const auto tj0 = Clock::now();
 
     for (std::size_t tid = 0; tid < nthreads; ++tid)
-        threads.emplace_back(worker, tid);
-    for (auto& th : threads)
-        th.join();
+    {
+        futures.emplace_back(pool.submit(
+            [&, tid]
+            {
+                JoinResult local{};
+
+                while (true)
+                {
+                    const std::uint32_t pid = next_pid.fetch_add(1, std::memory_order_relaxed);
+                    if (pid >= p)
+                        break;
+
+                    const JoinResult jr = join_one_partition(Rpart, Spart, pid);
+                    local.join_count += jr.join_count;
+                    local.checksum1 += jr.checksum1;
+                    local.checksum2 += jr.checksum2;
+                }
+
+                partials[tid] = local;
+            }));
+    }
+
+    for (auto& f : futures)
+        f.get();
+
+    const auto tj1 = Clock::now();
 
     JoinResult total{};
+    const auto ta0 = Clock::now();
     for (const auto& x : partials)
     {
         total.join_count += x.join_count;
         total.checksum1 += x.checksum1;
         total.checksum2 += x.checksum2;
     }
+    const auto ta1 = Clock::now();
+
+    const auto t1 = Clock::now();
+
+    times.join_local   = elapsed_sec(tj0, tj1);
+    times.accumulation = elapsed_sec(ta0, ta1);
+    times.total        = elapsed_sec(t0, t1);
 
     return total;
 }
@@ -446,6 +555,8 @@ static JoinResult naive_join_verifier(const std::vector<Record>& R, const std::v
 int main(int argc, char** argv)
 {
     std::uint64_t nr = 0, ns = 0, seed = 0, max_key = 0, p = 0, t = 0;
+    std::string json_path;
+    const bool save_json = read_arg_string(argc, argv, "-json", json_path);
 
     if (!read_arg_u64(argc, argv, "-nr", nr) || !read_arg_u64(argc, argv, "-ns", ns) ||
         !read_arg_u64(argc, argv, "-seed", seed) || !read_arg_u64(argc, argv, "-max-key", max_key) ||
@@ -475,6 +586,7 @@ int main(int argc, char** argv)
 
     const std::uint32_t P = static_cast<std::uint32_t>(p);
     const std::size_t T = static_cast<std::size_t>(t);
+    threadPool pool(T);
 
     if (!is_power_of_two(P))
     {
@@ -488,21 +600,32 @@ int main(int argc, char** argv)
     const auto R = generate_relation(NR, seed, max_key);
     const auto S = generate_relation(NS, seed ^ 0xdeadebdecdeedef1ULL, max_key);
 
-    const auto t0 = std::chrono::steady_clock::now();
-    const JoinResult result = partitioned_hash_join_parallel(R, S, P, T);
-    const auto t1 = std::chrono::steady_clock::now();
+    PhaseTimes times;
+    const JoinResult result = partitioned_hash_join_parallel(R, S, P, pool, T, times);
 
-    const double sec = std::chrono::duration<double>(t1 - t0).count();
-
-    std::cout << "NR=" << NR << " NS=" << NS << " P=" << P << " T=" << T << " seed=" << seed << " [0, " << max_key
-              << ")\n";
+    std::cout << "NR=" << NR << " NS=" << NS << " P=" << P << " T=" << T << " seed=" << seed
+              << " [0, " << max_key << ")\n";
 
     std::cout << "join_count=" << result.join_count << "\n";
     std::cout << "checksum1=" << result.checksum1 << "\n";
     std::cout << "checksum2=" << result.checksum2 << "\n";
 
     std::cout << std::fixed << std::setprecision(6);
-    std::cout << "time_sec=" << sec << "\n";
+
+    std::cout << "time_histogram_R=" << times.R.histogram << "\n";
+    std::cout << "time_prefix_R=" << times.R.prefix << "\n";
+    std::cout << "time_scatter_R=" << times.R.scatter << "\n";
+    std::cout << "time_partition_R=" << times.R.total << "\n";
+
+    std::cout << "time_histogram_S=" << times.S.histogram << "\n";
+    std::cout << "time_prefix_S=" << times.S.prefix << "\n";
+    std::cout << "time_scatter_S=" << times.S.scatter << "\n";
+    std::cout << "time_partition_S=" << times.S.total << "\n";
+
+    std::cout << "time_join=" << times.join_local << "\n";
+    std::cout << "time_accumulation=" << times.accumulation << "\n";
+    std::cout << "time_total=" << times.total << "\n";
+    std::cout << "time_sec=" << times.total << "\n";
 
     if (NR <= 500 && NS <= 500)
     {
@@ -510,6 +633,11 @@ int main(int argc, char** argv)
         std::cout << "naive_join_count=" << naive.join_count << "\n";
         std::cout << "naive_checksum1=" << naive.checksum1 << "\n";
         std::cout << "naive_checksum2=" << naive.checksum2 << "\n";
+    }
+
+    if (save_json)
+    {
+        write_run_json_par(json_path, NR, NS, P, T, seed, max_key, result, times);
     }
 
     return 0;

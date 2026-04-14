@@ -82,6 +82,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <fstream>
 // a and b are fixed parameters for the hash function. In this case I use the same constants as splitmix64.
 #define a 0x9E3779B97F4A7C15ULL
 #define b 0xBF58476D1CE4E5B9ULL
@@ -96,10 +97,53 @@ struct Record
 {
     std::uint64_t key{};
 };
+using Clock = std::chrono::steady_clock;
+// ------------------------------------------------------------
+// Join result
+// ------------------------------------------------------------
+struct JoinResult
+{
+    std::uint64_t join_count = 0;
+    std::uint64_t checksum1 = 0;
+    std::uint64_t checksum2 = 0;
+};
 
+struct PartitionTimes
+{
+    double histogram = 0.0;
+    double prefix = 0.0;
+    double scatter = 0.0;
+    double total = 0.0;
+};
+
+struct PhaseTimes
+{
+    PartitionTimes R;
+    PartitionTimes S;
+    double join_local = 0.0;
+    double accumulation = 0.0;
+    double total = 0.0;
+};
+
+static inline double elapsed_sec(const Clock::time_point& t0, const Clock::time_point& t1)
+{
+    return std::chrono::duration<double>(t1 - t0).count();
+}
 // ------------------------------------------------------------
 // Utility: command-line parsing
 // ------------------------------------------------------------
+static bool read_arg_string(int argc, char** argv, const std::string& name, std::string& out)
+{
+    for (int i = 1; i + 1 < argc; ++i)
+    {
+        if (name == argv[i])
+        {
+            out = argv[i + 1];
+            return true;
+        }
+    }
+    return false;
+}
 static bool read_arg_u64(int argc, char** argv, const std::string& name, std::uint64_t& out)
 {
     for (int i = 1; i + 1 < argc; ++i)
@@ -112,6 +156,51 @@ static bool read_arg_u64(int argc, char** argv, const std::string& name, std::ui
     }
     return false;
 }
+
+static void write_run_json_seq(const std::string& path,
+                               std::size_t NR,
+                               std::size_t NS,
+                               std::uint32_t P,
+                               std::uint64_t seed,
+                               std::uint64_t max_key,
+                               const JoinResult& result,
+                               const PhaseTimes& times)
+{
+    std::ofstream out(path);
+    if (!out)
+    {
+        std::cerr << "Error: cannot open JSON output file: " << path << "\n";
+        return;
+    }
+
+    out << "{\n";
+    out << "  \"mode\": \"seq\",\n";
+    out << "  \"NR\": " << NR << ",\n";
+    out << "  \"NS\": " << NS << ",\n";
+    out << "  \"P\": " << P << ",\n";
+    out << "  \"seed\": " << seed << ",\n";
+    out << "  \"max_key\": " << max_key << ",\n";
+
+    out << "  \"join_count\": " << result.join_count << ",\n";
+    out << "  \"checksum1\": " << result.checksum1 << ",\n";
+    out << "  \"checksum2\": " << result.checksum2 << ",\n";
+
+    out << "  \"time_histogram_R\": " << times.R.histogram << ",\n";
+    out << "  \"time_prefix_R\": " << times.R.prefix << ",\n";
+    out << "  \"time_scatter_R\": " << times.R.scatter << ",\n";
+    out << "  \"time_partition_R\": " << times.R.total << ",\n";
+
+    out << "  \"time_histogram_S\": " << times.S.histogram << ",\n";
+    out << "  \"time_prefix_S\": " << times.S.prefix << ",\n";
+    out << "  \"time_scatter_S\": " << times.S.scatter << ",\n";
+    out << "  \"time_partition_S\": " << times.S.total << ",\n";
+
+    out << "  \"time_join\": " << times.join_local << ",\n";
+    out << "  \"time_accumulation\": " << times.accumulation << ",\n";
+    out << "  \"time_total\": " << times.total << "\n";
+    out << "}\n";
+}
+
 static void usage(const char* prog)
 {
     std::cerr << "Usage:\n"
@@ -121,7 +210,8 @@ static void usage(const char* prog)
               << "  -ns         Number of records in relation S\n"
               << "  -seed       Deterministic seed\n"
               << "  -max-key    Keys are generated in [0, max-key)\n"
-              << "  -p          Number of partitions (power of two required in this reference code)\n";
+              << "  -p          Number of partitions (power of two required in this reference code)\n"
+              << "  -json       Optional path to save run information as JSON\n";
 }
 static bool is_power_of_two(std::uint32_t x)
 {
@@ -287,30 +377,34 @@ struct PartitionedRelation
 // After this phase, all records belonging to the same partition
 // are stored contiguously in memory, enabling independent processing.
 //
-static PartitionedRelation partition_relation(const std::vector<Record>& rel, std::uint32_t p)
+static PartitionedRelation partition_relation(const std::vector<Record>& rel, std::uint32_t p,
+                                              PartitionTimes& times)
 {
+    const auto t0 = Clock::now();
     const auto hist = compute_histogram(rel, p);
+    const auto t1 = Clock::now();
+
     const auto begin = exclusive_prefix_sum(hist);
+    const auto t2 = Clock::now();
+
     auto data = scatter_partitioned(rel, p, begin);
+    const auto t3 = Clock::now();
 
     std::vector<std::size_t> end(p, 0);
     for (std::uint32_t pid = 0; pid < p; ++pid)
     {
         end[pid] = begin[pid] + hist[pid];
     }
+    const auto t4 = Clock::now();
+
+    times.histogram = elapsed_sec(t0, t1);
+    times.prefix    = elapsed_sec(t1, t2);
+    times.scatter   = elapsed_sec(t2, t3);
+    times.total     = elapsed_sec(t0, t4);
 
     return PartitionedRelation{.data = std::move(data), .begin = begin, .end = end};
 }
 
-// ------------------------------------------------------------
-// Join result
-// ------------------------------------------------------------
-struct JoinResult
-{
-    std::uint64_t join_count = 0;
-    std::uint64_t checksum1 = 0;
-    std::uint64_t checksum2 = 0;
-};
 
 // ------------------------------------------------------------
 // Local join on one partition
@@ -398,22 +492,37 @@ static JoinResult join_one_partition(const PartitionedRelation& Rpart, const Par
 // This property is the basis for parallelization in Module 2.
 //
 static JoinResult partitioned_hash_join_sequential(const std::vector<Record>& R, const std::vector<Record>& S,
-                                                   std::uint32_t p)
+                                                   std::uint32_t p, PhaseTimes& times)
 {
-    // Phase 1: partition both relations
-    const PartitionedRelation Rpart = partition_relation(R, p);
-    const PartitionedRelation Spart = partition_relation(S, p);
+    const auto t0 = Clock::now();
 
-    // Phase 2 + 3: local joins and global reduction
-    JoinResult total{};
+    const PartitionedRelation Rpart = partition_relation(R, p, times.R);
+    const PartitionedRelation Spart = partition_relation(S, p, times.S);
 
+    std::vector<JoinResult> locals(p);
+
+    const auto tj0 = Clock::now();
     for (std::uint32_t pid = 0; pid < p; ++pid)
     {
-        const JoinResult local = join_one_partition(Rpart, Spart, pid);
+        locals[pid] = join_one_partition(Rpart, Spart, pid);
+    }
+    const auto tj1 = Clock::now();
+
+    JoinResult total{};
+    const auto ta0 = Clock::now();
+    for (const auto& local : locals)
+    {
         total.join_count += local.join_count;
         total.checksum1 += local.checksum1;
         total.checksum2 += local.checksum2;
     }
+    const auto ta1 = Clock::now();
+
+    const auto t1 = Clock::now();
+
+    times.join_local   = elapsed_sec(tj0, tj1);
+    times.accumulation = elapsed_sec(ta0, ta1);
+    times.total        = elapsed_sec(t0, t1);
 
     return total;
 }
@@ -450,6 +559,8 @@ static JoinResult naive_join_verifier(const std::vector<Record>& R, const std::v
 int main(int argc, char** argv)
 {
     std::uint64_t nr = 0, ns = 0, seed = 0, max_key = 0, p = 0;
+    std::string json_path;
+    const bool save_json = read_arg_string(argc, argv, "-json", json_path);
 
     if (!read_arg_u64(argc, argv, "-nr", nr) || !read_arg_u64(argc, argv, "-ns", ns) ||
         !read_arg_u64(argc, argv, "-seed", seed) || !read_arg_u64(argc, argv, "-max-key", max_key) ||
@@ -467,9 +578,6 @@ int main(int argc, char** argv)
 
     const std::uint32_t P = static_cast<std::uint32_t>(p);
 
-    // The power-of-two constraint on P is only due to the default
-    // mapping used here. It may be removed if the chosen partition
-    // function correctly handles arbitrary P
     if (!is_power_of_two(P))
     {
         std::cerr << "Error: in this reference implementation, P must be a power of two.\n";
@@ -479,17 +587,11 @@ int main(int argc, char** argv)
     const std::size_t NR = static_cast<std::size_t>(nr);
     const std::size_t NS = static_cast<std::size_t>(ns);
 
-    // Deterministic generation.
-    // We use two different seeds so that R and S are not identical.
     const auto R = generate_relation(NR, seed, max_key);
     const auto S = generate_relation(NS, seed ^ 0xdeadebdecdeedef1ULL, max_key);
 
-    // Time only the join pipeline, not input generation.
-    const auto t0 = std::chrono::steady_clock::now();
-    const JoinResult result = partitioned_hash_join_sequential(R, S, P);
-    const auto t1 = std::chrono::steady_clock::now();
-
-    const double sec = std::chrono::duration<double>(t1 - t0).count();
+    PhaseTimes times;
+    const JoinResult result = partitioned_hash_join_sequential(R, S, P, times);
 
     std::cout << "NR=" << NR << " NS=" << NS << " P=" << P << " seed=" << seed << " [0, " << max_key << ")\n";
 
@@ -498,15 +600,33 @@ int main(int argc, char** argv)
     std::cout << "checksum2=" << result.checksum2 << "\n";
 
     std::cout << std::fixed << std::setprecision(6);
-    std::cout << "time_sec=" << sec << "\n";
 
-    // Tiny debug check, only for very small datasets
+    std::cout << "time_histogram_R=" << times.R.histogram << "\n";
+    std::cout << "time_prefix_R=" << times.R.prefix << "\n";
+    std::cout << "time_scatter_R=" << times.R.scatter << "\n";
+    std::cout << "time_partition_R=" << times.R.total << "\n";
+
+    std::cout << "time_histogram_S=" << times.S.histogram << "\n";
+    std::cout << "time_prefix_S=" << times.S.prefix << "\n";
+    std::cout << "time_scatter_S=" << times.S.scatter << "\n";
+    std::cout << "time_partition_S=" << times.S.total << "\n";
+
+    std::cout << "time_join=" << times.join_local << "\n";
+    std::cout << "time_accumulation=" << times.accumulation << "\n";
+    std::cout << "time_total=" << times.total << "\n";
+    std::cout << "time_sec=" << times.total << "\n";
+
     if (NR <= 500 && NS <= 500)
     {
         const JoinResult naive = naive_join_verifier(R, S);
         std::cout << "naive_join_count=" << naive.join_count << "\n";
         std::cout << "naive_checksum1=" << naive.checksum1 << "\n";
         std::cout << "naive_checksum2=" << naive.checksum2 << "\n";
+    }
+
+    if (save_json)
+    {
+        write_run_json_seq(json_path, NR, NS, P, seed, max_key, result, times);
     }
 
     return 0;

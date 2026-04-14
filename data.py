@@ -19,322 +19,313 @@ with open("results/results.json") as f:
 df = pd.DataFrame(data)
 
 # =========================
-# CONTROLLI / NORMALIZZAZIONE
+# CONTROLLI
 # =========================
 required_cols = [
     "NR", "NS", "P", "seed", "max_key", "threads",
-    "time_seq", "time_par", "speedup", "checksum_correct"
+    "time_seq", "time_par"
 ]
 
 missing = [c for c in required_cols if c not in df.columns]
 if missing:
     raise ValueError(f"Missing columns in results.json: {missing}")
 
-# chiave di dimensione problema per comodità
-# assumiamo spesso NR == NS, ma teniamo comunque entrambe
 df["N"] = df["NR"]
 
-# throughput join/s
-df["throughput_seq"] = df["NR"] / df["time_seq"]
-df["throughput_par"] = df["NR"] / df["time_par"]
-
-# weak scaling efficiency rispetto a T=1
-# la calcoliamo dopo in una tabella dedicata
-
 # =========================
-# SALVA RAW CSV
+# FILTRI DATASET
 # =========================
-df.to_csv("results/tables/raw_results.csv", index=False)
-
-# =========================
-# FORMATTAZIONE
-# =========================
-def fmt_mean_std(mean, std, decimals=2, unit=""):
-    return f"{mean:.{decimals}f} ± {std:.{decimals}f} {unit}".strip()
-
-def fmt_mean(mean, decimals=2, suffix=""):
-    return f"{mean:.{decimals}f}{suffix}"
-
-# =========================
-# TABELLA 1: SEQ VS PAR PER (N, threads)
-# =========================
-summary_by_n_t = df.groupby(["N", "threads"]).agg({
-    "time_seq": ["median", "std"],
-    "time_par": ["median", "std"],
-    "speedup": ["median", "std"],
-    "throughput_seq": ["median", "std"],
-    "throughput_par": ["median", "std"],
-    "checksum_correct": ["min"]
-}).reset_index()
-
-summary_by_n_t.columns = [
-    "N", "threads",
-    "time_seq_median", "time_seq_std",
-    "time_par_median", "time_par_std",
-    "speedup_median", "speedup_std",
-    "throughput_seq_median", "throughput_seq_std",
-    "throughput_par_median", "throughput_par_std",
-    "checksum_correct"
-]
-
-# conversioni unità
-for col in [
-    "time_seq_median", "time_seq_std",
-    "time_par_median", "time_par_std"
-]:
-    summary_by_n_t[col] *= 1e6   # microsecondi
-
-for col in [
-    "throughput_seq_median", "throughput_seq_std",
-    "throughput_par_median", "throughput_par_std"
-]:
-    summary_by_n_t[col] /= 1e6   # milioni di record/s
-
-formatted_seq_par = pd.DataFrame({
-    "N": summary_by_n_t["N"].astype(int),
-    "threads": summary_by_n_t["threads"].astype(int),
-    "seq time": [
-        fmt_mean_std(m, s, unit="µs")
-        for m, s in zip(summary_by_n_t["time_seq_median"], summary_by_n_t["time_seq_std"])
-    ],
-    "par time": [
-        fmt_mean_std(m, s, unit="µs")
-        for m, s in zip(summary_by_n_t["time_par_median"], summary_by_n_t["time_par_std"])
-    ],
-    "speedup": [
-        fmt_mean_std(m, s)
-        for m, s in zip(summary_by_n_t["speedup_median"], summary_by_n_t["speedup_std"])
-    ],
-    "seq throughput": [
-        fmt_mean_std(m, s, unit="Mrec/s")
-        for m, s in zip(summary_by_n_t["throughput_seq_median"], summary_by_n_t["throughput_seq_std"])
-    ],
-    "par throughput": [
-        fmt_mean_std(m, s, unit="Mrec/s")
-        for m, s in zip(summary_by_n_t["throughput_par_median"], summary_by_n_t["throughput_par_std"])
-    ],
-    "checksum correct": summary_by_n_t["checksum_correct"].astype(bool)
-})
-
-formatted_seq_par.to_csv("results/tables/summary_seq_par.csv", index=False)
-
-latex_seq_par = r"""\begin{table}[htbp]
-\centering
-\small
-\setlength{\tabcolsep}{4pt}
-\renewcommand{\arraystretch}{1.1}
-\resizebox{\textwidth}{!}{%
-""" + "\n" + formatted_seq_par.to_latex(index=False, escape=True) + r"""%
-}
-\caption{Sequential vs parallel partitioned hash join. Median and standard deviation over multiple runs.}
-\label{tab:seq-par-performance}
-\end{table}
-"""
-
-with open("results/tables/summary_seq_par.tex", "w", encoding="utf-8") as f:
-    f.write(latex_seq_par)
-
-# =========================
-# TABELLA 2: STRONG SCALING
-# =========================
-# Per ogni N, variamo solo i thread
-strong = df.groupby(["N", "threads"]).agg({
-    "time_par": ["median", "std"],
-    "speedup": ["median", "std"],
-    "checksum_correct": ["min"]
-}).reset_index()
-
-strong.columns = [
-    "N", "threads",
-    "time_par_median", "time_par_std",
-    "speedup_median", "speedup_std",
-    "checksum_correct"
-]
-
-strong["efficiency_median"] = strong["speedup_median"] / strong["threads"]
-
-strong["time_par_median"] *= 1e6
-strong["time_par_std"] *= 1e6
-
-formatted_strong = pd.DataFrame({
-    "N": strong["N"].astype(int),
-    "threads": strong["threads"].astype(int),
-    "par time": [
-        fmt_mean_std(m, s, unit="µs")
-        for m, s in zip(strong["time_par_median"], strong["time_par_std"])
-    ],
-    "speedup": [
-        fmt_mean_std(m, s)
-        for m, s in zip(strong["speedup_median"], strong["speedup_std"])
-    ],
-    "efficiency": [
-        fmt_mean(m, suffix="")
-        for m in strong["efficiency_median"]
-    ],
-    "checksum correct": strong["checksum_correct"].astype(bool)
-})
-
-formatted_strong.to_csv("results/tables/summary_strong_scaling.csv", index=False)
-
-latex_strong = r"""\begin{table}[htbp]
-\centering
-\small
-\setlength{\tabcolsep}{4pt}
-\renewcommand{\arraystretch}{1.1}
-\resizebox{\textwidth}{!}{%
-""" + "\n" + formatted_strong.to_latex(index=False, escape=True) + r"""%
-}
-\caption{Strong scaling results for the parallel partitioned hash join.}
-\label{tab:strong-scaling}
-\end{table}
-"""
-
-with open("results/tables/summary_strong_scaling.tex", "w", encoding="utf-8") as f:
-    f.write(latex_strong)
-
-# =========================
-# TABELLA 3: WEAK SCALING
-# =========================
-# Assumiamo che i dati weak scaling abbiano N che cresce con i thread.
-# Calcoliamo l'efficienza weak rispetto al caso T=1 con stesso carico per thread.
-weak_base = df[df["threads"] == 1].groupby("N").agg({
-    "time_par": "median"
-}).reset_index().rename(columns={"time_par": "base_time_t1"})
-
-weak = df.groupby(["N", "threads"]).agg({
-    "time_par": ["median", "std"],
-    "checksum_correct": ["min"]
-}).reset_index()
-
-weak.columns = [
-    "N", "threads",
-    "time_par_median", "time_par_std",
-    "checksum_correct"
-]
-
-# per stimare weak scaling, prendiamo come baseline il più piccolo N con T=1
-if not weak_base.empty:
-    reference_time = weak_base.sort_values("N").iloc[0]["base_time_t1"]
-    weak["weak_efficiency"] = reference_time / weak["time_par_median"]
+if "experiment_type" in df.columns:
+    strong_df = df[df["experiment_type"] == "strong"].copy()
+    weak_all_df = df[df["experiment_type"] == "weak"].copy()
 else:
-    weak["weak_efficiency"] = np.nan
-
-weak["time_par_median"] *= 1e6
-weak["time_par_std"] *= 1e6
-
-formatted_weak = pd.DataFrame({
-    "N": weak["N"].astype(int),
-    "threads": weak["threads"].astype(int),
-    "par time": [
-        fmt_mean_std(m, s, unit="µs")
-        for m, s in zip(weak["time_par_median"], weak["time_par_std"])
-    ],
-    "weak efficiency": [
-        fmt_mean(m) if pd.notna(m) else "nan"
-        for m in weak["weak_efficiency"]
-    ],
-    "checksum correct": weak["checksum_correct"].astype(bool)
-})
-
-formatted_weak.to_csv("results/tables/summary_weak_scaling.csv", index=False)
-
-latex_weak = r"""\begin{table}[htbp]
-\centering
-\small
-\setlength{\tabcolsep}{4pt}
-\renewcommand{\arraystretch}{1.1}
-\resizebox{\textwidth}{!}{%
-""" + "\n" + formatted_weak.to_latex(index=False, escape=True) + r"""%
-}
-\caption{Weak scaling results for the parallel partitioned hash join.}
-\label{tab:weak-scaling}
-\end{table}
-"""
-
-with open("results/tables/summary_weak_scaling.tex", "w", encoding="utf-8") as f:
-    f.write(latex_weak)
+    strong_df = df.copy()
+    weak_all_df = df.copy()
 
 # =========================
-# GRAFICI
+# STRONG SCALING SOLO N = 10.000.000
 # =========================
+TARGET_STRONG_N = 10_000_000
+strong_df = strong_df[strong_df["N"] == TARGET_STRONG_N].copy()
 
-# 1) Time seq vs par al variare di N, per ogni T
-for t in sorted(df["threads"].unique()):
-    tmp = summary_by_n_t[summary_by_n_t["threads"] == t].sort_values("N")
-    plt.figure()
-    plt.errorbar(tmp["N"], tmp["time_seq_median"], yerr=tmp["time_seq_std"], label="seq")
-    plt.errorbar(tmp["N"], tmp["time_par_median"], yerr=tmp["time_par_std"], label=f"par T={t}")
-    plt.xscale("log")
-    plt.xlabel("N")
-    plt.ylabel("Time (µs)")
-    plt.title(f"Sequential vs Parallel Time (T={t})")
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(f"results/plots/time_seq_vs_par_t{t}.png")
-    plt.close()
+if strong_df.empty:
+    raise ValueError(f"No strong scaling data found for N = {TARGET_STRONG_N}")
 
-# 2) Speedup vs threads per ogni N
-for n in sorted(df["N"].unique()):
-    tmp = strong[strong["N"] == n].sort_values("threads")
-    plt.figure()
-    plt.errorbar(tmp["threads"], tmp["speedup_median"], yerr=tmp["speedup_std"], label=f"N={n}")
-    plt.xlabel("Threads")
-    plt.ylabel("Speedup")
-    plt.title(f"Strong Scaling Speedup (N={n})")
-    plt.grid(True)
-    plt.legend()
-    plt.savefig(f"results/plots/speedup_vs_threads_n{int(n)}.png")
-    plt.close()
+strong_agg = strong_df.groupby(["N", "threads"]).agg(
+    time_seq_median=("time_seq", "median"),
+    time_seq_std=("time_seq", "std"),
+    time_par_median=("time_par", "median"),
+    time_par_std=("time_par", "std"),
+    speedup_median=("speedup", "median"),
+    speedup_std=("speedup", "std"),
+    checksum_correct=("checksum_correct", "min")
+).reset_index()
 
-# 3) Efficiency vs threads per ogni N
-for n in sorted(df["N"].unique()):
-    tmp = strong[strong["N"] == n].sort_values("threads")
-    plt.figure()
-    plt.plot(tmp["threads"], tmp["efficiency_median"], marker="o", label=f"N={n}")
-    plt.xlabel("Threads")
-    plt.ylabel("Efficiency")
-    plt.title(f"Strong Scaling Efficiency (N={n})")
-    plt.grid(True)
-    plt.legend()
-    plt.savefig(f"results/plots/efficiency_vs_threads_n{int(n)}.png")
-    plt.close()
+strong_agg["efficiency_median"] = strong_agg["speedup_median"] / strong_agg["threads"]
 
-# 4) Throughput par vs N per ogni T
-for t in sorted(summary_by_n_t["threads"].unique()):
-    tmp = summary_by_n_t[summary_by_n_t["threads"] == t].sort_values("N")
-    plt.figure()
-    plt.errorbar(tmp["N"], tmp["throughput_par_median"], yerr=tmp["throughput_par_std"], label=f"T={t}")
-    plt.xscale("log")
-    plt.xlabel("N")
-    plt.ylabel("Throughput (Mrec/s)")
-    plt.title(f"Parallel Throughput vs N (T={t})")
-    plt.grid(True)
-    plt.legend()
-    plt.savefig(f"results/plots/throughput_vs_n_t{t}.png")
-    plt.close()
+strong_agg.to_csv("results/tables/strong_scaling_N10000000.csv", index=False)
 
-# 5) Weak scaling: time vs threads
-tmp = weak.sort_values("threads")
-plt.figure()
-plt.errorbar(tmp["threads"], tmp["time_par_median"], yerr=tmp["time_par_std"], label="weak scaling")
+# =========================
+# GRAFICO 1: STRONG SCALING SPEEDUP
+# =========================
+plt.figure(figsize=(8, 5))
+
+all_threads = sorted(strong_agg["threads"].unique())
+plt.plot(all_threads, all_threads, linestyle="--", label="Ideal speedup")
+
+tmp = strong_agg.sort_values("threads")
+plt.errorbar(
+    tmp["threads"],
+    tmp["speedup_median"],
+    yerr=tmp["speedup_std"].fillna(0),
+    marker="o",
+    capsize=4,
+    label="N=10000000"
+)
+
 plt.xlabel("Threads")
-plt.ylabel("Time (µs)")
-plt.title("Weak Scaling Time")
+plt.ylabel("Speedup")
+plt.title("Strong Scaling: Speedup vs Threads (N=10,000,000)")
 plt.grid(True)
 plt.legend()
-plt.savefig("results/plots/weak_scaling_time.png")
+plt.tight_layout()
+plt.savefig("results/plots/strong_scaling_speedup.png", dpi=200)
 plt.close()
 
-# 6) Weak scaling efficiency vs threads
-tmp = weak.sort_values("threads")
-plt.figure()
-plt.plot(tmp["threads"], tmp["weak_efficiency"], marker="o", label="weak efficiency")
+# =========================
+# GRAFICO 2: STRONG SCALING TIME
+# =========================
+plt.figure(figsize=(8, 5))
+
+tmp = strong_agg.sort_values("threads")
+plt.errorbar(
+    tmp["threads"],
+    tmp["time_par_median"],
+    yerr=tmp["time_par_std"].fillna(0),
+    marker="o",
+    capsize=4,
+    label="N=10000000"
+)
+
 plt.xlabel("Threads")
-plt.ylabel("Weak Scaling Efficiency")
-plt.title("Weak Scaling Efficiency")
+plt.ylabel("Time (s)")
+plt.title("Strong Scaling: Parallel Time vs Threads (N=10,000,000)")
 plt.grid(True)
 plt.legend()
-plt.savefig("results/plots/weak_scaling_efficiency.png")
+plt.tight_layout()
+plt.savefig("results/plots/strong_scaling_time.png", dpi=200)
 plt.close()
 
-print("Analysis complete. Tables and plots saved in results/")
+# =========================
+# COSTRUZIONE DATI WEAK SCALING
+# =========================
+weak_agg = weak_all_df.groupby(["N", "threads"]).agg(
+    time_par_median=("time_par", "median"),
+    time_par_std=("time_par", "std"),
+    checksum_correct=("checksum_correct", "min")
+).reset_index()
+
+available_pairs = set(zip(weak_agg["N"], weak_agg["threads"]))
+unique_threads = sorted(weak_agg["threads"].unique())
+unique_N = sorted(weak_agg["N"].unique())
+
+weak_rows = []
+
+for base_N in unique_N:
+    candidate = []
+    ok = True
+    for t in unique_threads:
+        needed_N = base_N * t
+        if (needed_N, t) not in available_pairs:
+            ok = False
+            break
+        row = weak_agg[(weak_agg["N"] == needed_N) & (weak_agg["threads"] == t)].iloc[0]
+        candidate.append(row)
+    if ok:
+        weak_rows = candidate
+        break
+
+if weak_rows:
+    weak_df = pd.DataFrame(weak_rows).copy().reset_index(drop=True)
+
+    base_time = weak_df[weak_df["threads"] == 1]["time_par_median"].iloc[0]
+    weak_df["weak_efficiency"] = base_time / weak_df["time_par_median"]
+
+    weak_df.to_csv("results/tables/weak_scaling_selected.csv", index=False)
+
+    # =========================
+    # GRAFICO 3: WEAK SCALING TIME
+    # =========================
+    plt.figure(figsize=(8, 5))
+    plt.errorbar(
+        weak_df["threads"],
+        weak_df["time_par_median"],
+        yerr=weak_df["time_par_std"].fillna(0),
+        marker="o",
+        capsize=4,
+        label="Measured"
+    )
+
+    plt.axhline(base_time, linestyle="--", label="Ideal constant time")
+
+    plt.xlabel("Threads")
+    plt.ylabel("Time (s)")
+    plt.title("Weak Scaling: Time vs Threads")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("results/plots/weak_scaling_time.png", dpi=200)
+    plt.close()
+
+    # =========================
+    # GRAFICO 4: WEAK SCALING EFFICIENCY
+    # =========================
+    plt.figure(figsize=(8, 5))
+    plt.plot(
+        weak_df["threads"],
+        weak_df["weak_efficiency"],
+        marker="o",
+        label="Weak scaling efficiency"
+    )
+    plt.axhline(1.0, linestyle="--", label="Ideal efficiency")
+
+    plt.xlabel("Threads")
+    plt.ylabel("Weak Scaling Efficiency")
+    plt.title("Weak Scaling: Efficiency vs Threads")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("results/plots/weak_scaling_efficiency.png", dpi=200)
+    plt.close()
+
+else:
+    print("No valid weak scaling subset found.")
+    print("To evaluate weak scaling correctly, you need runs where N grows proportionally with threads.")
+
+# =========================
+# ISTOGRAMMA STACKED DELLE FASI
+# =========================
+phase_cols_seq = [
+    "time_histogram_R_seq",
+    "time_prefix_R_seq",
+    "time_scatter_R_seq",
+    "time_histogram_S_seq",
+    "time_prefix_S_seq",
+    "time_scatter_S_seq",
+    "time_join_seq",
+    "time_accumulation_seq",
+    "time_total_seq",
+]
+
+phase_cols_par = [
+    "time_histogram_R_par",
+    "time_prefix_R_par",
+    "time_scatter_R_par",
+    "time_histogram_S_par",
+    "time_prefix_S_par",
+    "time_scatter_S_par",
+    "time_join_par",
+    "time_accumulation_par",
+    "time_total_par",
+]
+
+has_phase_data = all(col in strong_df.columns for col in phase_cols_seq + phase_cols_par)
+
+if has_phase_data:
+    phase_rows = []
+
+    # riga sequenziale: basta una sola, facciamo mediana sui seed
+    seq_row = {
+        "label": "seq",
+        "Histogram R": strong_df["time_histogram_R_seq"].median(),
+        "Prefix R": strong_df["time_prefix_R_seq"].median(),
+        "Scatter R": strong_df["time_scatter_R_seq"].median(),
+        "Histogram S": strong_df["time_histogram_S_seq"].median(),
+        "Prefix S": strong_df["time_prefix_S_seq"].median(),
+        "Scatter S": strong_df["time_scatter_S_seq"].median(),
+        "Join Local": strong_df["time_join_seq"].median(),
+        "Accumulation": strong_df["time_accumulation_seq"].median(),
+        "Total": strong_df["time_total_seq"].median(),
+    }
+    phase_rows.append(seq_row)
+
+    # righe parallele: una per ogni numero di thread
+    for t in sorted(strong_df["threads"].unique()):
+        tmp = strong_df[strong_df["threads"] == t]
+
+        row = {
+            "label": str(int(t)),
+            "Histogram R": tmp["time_histogram_R_par"].median(),
+            "Prefix R": tmp["time_prefix_R_par"].median(),
+            "Scatter R": tmp["time_scatter_R_par"].median(),
+            "Histogram S": tmp["time_histogram_S_par"].median(),
+            "Prefix S": tmp["time_prefix_S_par"].median(),
+            "Scatter S": tmp["time_scatter_S_par"].median(),
+            "Join Local": tmp["time_join_par"].median(),
+            "Accumulation": tmp["time_accumulation_par"].median(),
+            "Total": tmp["time_total_par"].median(),
+        }
+        phase_rows.append(row)
+
+    phase_df = pd.DataFrame(phase_rows)
+
+    phase_names = [
+        "Histogram R",
+        "Prefix R",
+        "Scatter R",
+        "Histogram S",
+        "Prefix S",
+        "Scatter S",
+        "Join Local",
+        "Accumulation",
+    ]
+
+    phase_df["Measured Sum"] = phase_df[phase_names].sum(axis=1)
+    phase_df["Other Overhead"] = (phase_df["Total"] - phase_df["Measured Sum"]).clip(lower=0.0)
+
+    # conversione in ms
+    for col in phase_names + ["Other Overhead", "Total"]:
+        phase_df[col] = phase_df[col] * 1000.0
+
+    phase_df.to_csv("results/tables/phase_breakdown.csv", index=False)
+
+    colors = {
+        "Histogram R":   "#4E79A7",  # blue
+        "Prefix R":      "#A0CBE8",  # light blue
+        "Scatter R":     "#2F5D8A",  # deep steel blue
+
+        "Histogram S":   "#59A14F",  # green
+        "Prefix S":      "#8CD17D",  # light green
+        "Scatter S":     "#2E7D32",  # dark green
+
+        "Join Local":    "#E15759",  # coral red
+        "Accumulation":  "#F28E2B",  # orange
+        "Other Overhead":"#9D9D9D",  # neutral gray
+    }
+
+    plt.figure(figsize=(11, 6))
+    bottom = np.zeros(len(phase_df))
+
+    for col in phase_names + ["Other Overhead"]:
+        plt.bar(
+            phase_df["label"],
+            phase_df[col],
+            bottom=bottom,
+            label=col,
+            color=colors[col],
+            edgecolor="white",
+            linewidth=0.5
+        )
+        bottom += phase_df[col].values
+
+    plt.ylabel("Time (ms)")
+    plt.xlabel("Series / Threads")
+    plt.title("Phase Breakdown — Execution Time")
+    plt.grid(axis="y", linestyle="--", alpha=0.3)
+    plt.legend(loc="upper right", frameon=True)
+    plt.tight_layout()
+    plt.savefig("results/plots/phase_breakdown.png", dpi=200)
+    plt.close()
+
+else:
+    print("Phase timing columns not found. Skipping phase breakdown histogram.")
