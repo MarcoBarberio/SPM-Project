@@ -14,7 +14,8 @@
 #include <unordered_map>
 #include <vector>
 #include <fstream>
-//a and b are fixed parameters for the hash function. In this case I use the same constants as splitmix64.
+//a and b are fixed parameters for the hash function. 
+//In this case I use the same constants as splitmix64.
 
 #define a 0x9E3779B97F4A7C15ULL
 #define b 0xBF58476D1CE4E5B9ULL
@@ -31,6 +32,10 @@ struct JoinResult
     std::uint64_t checksum1 = 0;
     std::uint64_t checksum2 = 0;
 };
+
+// ------------------------------------------------------------
+// Timing utilities
+// ------------------------------------------------------------
 using Clock = std::chrono::steady_clock;
 
 struct PartitionTimes
@@ -68,6 +73,9 @@ static bool read_arg_string(int argc, char** argv, const std::string& name, std:
     return false;
 }
 
+// ------------------------------------------------------------
+// JSON output
+// ------------------------------------------------------------
 static void write_run_json_par(const std::string& path,
                                std::size_t NR,
                                std::size_t NS,
@@ -113,6 +121,7 @@ static void write_run_json_par(const std::string& path,
     out << "  \"time_total\": " << times.total << "\n";
     out << "}\n";
 }
+
 static void usage(const char* prog)
 {
     std::cerr << "Usage:\n"
@@ -190,7 +199,8 @@ struct HistogramData
 // ------------------------------------------------------------
 //
 // Count how many records go to each partition.
-//
+// In order to avoid contention on the histogram counters, each thread computes a local histogram,
+// and then we sum them up at the end.
 // hist[pid] = number of records whose key maps to pid
 //
 static HistogramData compute_histogram(const std::vector<Record>& rel, std::uint32_t p, threadPool& pool,
@@ -264,12 +274,19 @@ static std::vector<std::size_t> exclusive_prefix_sum(const std::vector<std::size
 // ------------------------------------------------------------
 // Scatter into a partitioned array
 // ------------------------------------------------------------
-//
 // Reorder records so that all records belonging to the same partition become
 // contiguous in memory.
 //
-// We use a write cursor per partition, initialized from the begin offsets.
+// For each partition, we precompute a private output range for every thread.
+// These per-thread ranges are derived from the global begin offsets and from
+// the local histograms computed during the histogram phase.
 //
+// During scatter, each thread processes the same input chunk used in the
+// histogram phase and maintains a private write cursor for each partition,
+// initialized from its own precomputed starting offsets.
+// Therefore, threads write only inside disjoint regions of the output array,
+// and no atomic operations or locks are needed.
+    
 static std::vector<Record> scatter_partitioned(const std::vector<Record>& rel, std::uint32_t p,
                                                const std::vector<std::size_t>& begin,
                                                const std::vector<std::vector<std::size_t>>& local_hists,
@@ -411,13 +428,7 @@ static JoinResult join_one_partition(const PartitionedRelation& Rpart, const Par
 
     // Build phase:
     // count how many times each key appears in R_p.
-    //
-    // NOTE: Adopting std::unordered_map is an implementation choice
-    // of the reference code, not a mandatory part of the algorithm itself.
-    // Students may discuss its impact on performance and, if properly justified,
-    // replace it with alternative structures in their analysis or optimized versions,
-    // provided that the overall join logic remains unchanged
-    //
+    
     std::unordered_map<std::uint64_t, std::uint32_t> countR;
     countR.reserve((r_end - r_begin) * 2);
 
@@ -445,10 +456,7 @@ static JoinResult join_one_partition(const PartitionedRelation& Rpart, const Par
     return result;
 }
 
-// ------------------------------------------------------------
-// Full sequential partitioned hash join
-// ------------------------------------------------------------
-//
+
 // This is the end-to-end baseline:
 //
 //   1. Partition R
@@ -457,8 +465,8 @@ static JoinResult join_one_partition(const PartitionedRelation& Rpart, const Par
 //        local build + local probe
 //   4. Accumulate results
 //
-// Each partition can be processed independently.
-// This property is the basis for parallelization in Module 2.
+// Each partition can be processed independently,so we can parallelize step 3 
+// by having multiple threads process different partitions concurrently.
 //
 static JoinResult partitioned_hash_join_parallel(const std::vector<Record>& R, const std::vector<Record>& S,
                                                  std::uint32_t p, threadPool& pool, std::size_t nthreads,

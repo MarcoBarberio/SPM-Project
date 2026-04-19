@@ -1,0 +1,3 @@
+1)Correggere per il primo modulo l'orchestrator in modo da metterlo parametrico
+2)Mettere il discorso del main thread
+3)provare a fare weak scaling con un un milione di partenza

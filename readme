@@ -1,66 +1,175 @@
-Compile the programs using:
+Compilation using the Makefile:
+- make modulo2
+Builds:
+- build/hashjoin_seq
+- build/hashjoin_par
 
-make
+Clean:
+- make clean
 
-Or compile manually:
+Direct compilation with g++:
+- g++ -I./include -std=c++20 -Wall -pthread -O3 src/hashjoin_seq.cpp -o build/hashjoin_seq
+- g++ -I./include -std=c++20 -Wall -pthread -O3 src/hashjoin_par.cpp -o build/hashjoin_par
 
-Baseline
-g++ -O3 -fno-tree-vectorize main_baseline.cpp -o build/main_baseline
+PROGRAM EXECUTION
 
-Auto-vectorized
-g++ -O3 -march=native main_baseline.cpp -o build/main_autovec
+1) Sequential version
 
-AVX2
-g++ -O3 -mavx2 -march=native main_avx.cpp -o build/main_avx
-
-CUDA
-nvcc -O3 main_cuda.cpp -o build/main_cuda
-
-General usage:
-
-./build/main_<version> N k seed warmup
-
-Example:
-
-./build/main_baseline 1000000 16 0 5
-./build/main_autovec 1000000 16 0 5
-./build/main_avx 1000000 16 0 5
-./build/main_cuda 1000000 16 0 5
+Command:
+- ./build/hashjoin_seq -nr NR -ns NS -seed SEED -max-key K -p P [-json PATH]
 
 Parameters:
+- -nr       number of records in relation R
+- -ns       number of records in relation S
+- -seed     deterministic seed
+- -max-key  keys generated in [0, max-key)
+- -p        number of partitions
+- -json     optional, saves run data in a JSON file
 
-N = number of keys
-k = number of partition bits (P = 2^k)
-seed = random seed
-warmup = number of warmup runs
-
-Optional flags:
-
---json    save output to JSON file
---print   print mapping array (only for N<500)
+Constraints:
+- P must be a power of 2
 
 Example:
+- ./build/hashjoin_seq -nr 1000000 -ns 1000000 -seed 1 -max-key 100000 -p 1024
+- ./build/hashjoin_seq -nr 1000 -ns 1000 -seed 1 -max-key 1000 -p 16 -json results/seq_run.json
 
-./build/main_baseline 1000 16 0 5 --json --print
+Output:
+- join_count
+- checksum1
+- checksum2
+- phase times
+- time_total / time_sec
+- for very small inputs (NR <= 500 and NS <= 500) it also prints:
+  - naive_join_count
+  - naive_checksum1
+  - naive_checksum2
 
-To run all experiments automatically:
+2) Parallel version
 
-python orchestrator.py
+Command:
+- ./build/hashjoin_par -nr NR -ns NS -seed SEED -max-key K -p P -t T [-json PATH]
 
-This script:
+Parameters:
+- -nr       number of records in relation R
+- -ns       number of records in relation S
+- -seed     deterministic seed
+- -max-key  keys generated in [0, max-key)
+- -p        number of partitions
+- -t        number of thread pool threads
+- -json     optional, saves run data in a JSON file
 
-Runs baseline, auto-vectorized, AVX2, and CUDA versions
-Checks correctness
-Computes speedups
-Computes Throughput
+Constraints:
+- P must be a power of 2
+- T must be >= 1
 
-Saves results to:
-results/results.json
-Output
+Example:
+- ./build/hashjoin_par -nr 1000000 -ns 1000000 -seed 1 -max-key 100000 -p 1024 -t 8
+- ./build/hashjoin_par -nr 1000 -ns 1000 -seed 1 -max-key 1000 -p 16 -t 4 -json results/par_run.json
 
-For each run, the following metrics are saved:
+Output:
+- join_count
+- checksum1
+- checksum2
+- phase times
+- time_total / time_sec
+- for very small inputs (NR <= 500 and NS <= 500) it also prints:
+  - naive_join_count
+  - naive_checksum1
+  - naive_checksum2
 
-Execution time
-Speedup
-Checksum correctness
-Array correctness (for N<500)
+
+ORCHESTRATOR
+
+
+Script:
+- python orchestrator.py [parameters]
+
+It is used to execute:
+- correctness experiments
+- strong scaling experiments
+- weak scaling experiments
+
+CORRECTNESS CHECKS
+- correctness is checked automatically by comparing the results of the sequential and parallel runs
+- the following field is saved in results.json:
+  - checksum_correct
+- checksum_correct = true means that:
+  - join_count
+  - checksum1
+  - checksum2
+  match between the sequential and parallel versions
+
+Available parameters:
+
+General:
+- --run correctness strong weak
+  chooses which test groups to run
+- --ps P1 P2 ...
+  list of P values
+- --seeds S1 S2 ...
+  list of seeds
+- --max-key K
+  value of max_key
+- --timeout-sec X
+  timeout for a single run
+- --results-file PATH
+  output JSON file for results
+- --config-file PATH
+  output JSON file for the configuration
+- --append
+  appends results to the existing file instead of overwriting it
+
+Correctness:
+- --correctness-cases-file PATH
+  optional JSON file containing correctness cases
+
+Strong scaling:
+- --strong-ns N1 N2 ...
+  problem sizes for strong scaling experiments
+- --strong-threads T1 T2 ...
+  thread counts to use in strong scaling experiments
+
+Weak scaling:
+- --weak-base-n N
+  base workload per thread
+- --weak-threads T1 T2 ...
+  thread counts to use in weak scaling experiments
+- --run-seq-for-weak
+  also runs the sequential version in weak tests
+
+If no parameters are passed, the defaults are:
+
+- --run correctness strong weak
+- --ps 1024
+- --seeds 0 1 2 3 4 5 6 7 8 9
+- --max-key 100000
+- --timeout-sec 1800
+
+ORCHESTRATOR EXAMPLES
+
+1) Only correctness:
+- python orchestrator.py --run correctness
+
+2) Only strong scaling:
+- python orchestrator.py --run strong --strong-ns 1000000 5000000 10000000 --strong-threads 1 2 4 8
+
+3) Only weak scaling:
+- python orchestrator.py --run weak --weak-base-n 200000 --weak-threads 1 2 4 8 --run-seq-for-weak
+
+4) Everything with custom parameters:
+- python orchestrator.py --run correctness strong weak --ps 1024 --seeds 0 1 2 --max-key 100000 --strong-ns 1000000 5000000 --strong-threads 1 2 4 8 --weak-base-n 200000 --weak-threads 1 2 4 8 --run-seq-for-weak
+
+GENERATED FILES
+
+
+The orchestrator saves:
+- results/results.json
+- results/experiment_config.json
+
+Each run with -json also saves a JSON file with:
+- run parameters
+- join_count
+- checksum1
+- checksum2
+- phase times
+- time_total

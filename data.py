@@ -45,76 +45,6 @@ else:
 # =========================
 # STRONG SCALING SOLO N = 10.000.000
 # =========================
-TARGET_STRONG_N = 10_000_000
-strong_df = strong_df[strong_df["N"] == TARGET_STRONG_N].copy()
-
-if strong_df.empty:
-    raise ValueError(f"No strong scaling data found for N = {TARGET_STRONG_N}")
-
-strong_agg = strong_df.groupby(["N", "threads"]).agg(
-    time_seq_median=("time_seq", "median"),
-    time_seq_std=("time_seq", "std"),
-    time_par_median=("time_par", "median"),
-    time_par_std=("time_par", "std"),
-    speedup_median=("speedup", "median"),
-    speedup_std=("speedup", "std"),
-    checksum_correct=("checksum_correct", "min")
-).reset_index()
-
-strong_agg["efficiency_median"] = strong_agg["speedup_median"] / strong_agg["threads"]
-
-strong_agg.to_csv("results/tables/strong_scaling_N10000000.csv", index=False)
-
-# =========================
-# GRAFICO 1: STRONG SCALING SPEEDUP
-# =========================
-plt.figure(figsize=(8, 5))
-
-all_threads = sorted(strong_agg["threads"].unique())
-plt.plot(all_threads, all_threads, linestyle="--", label="Ideal speedup")
-
-tmp = strong_agg.sort_values("threads")
-plt.errorbar(
-    tmp["threads"],
-    tmp["speedup_median"],
-    yerr=tmp["speedup_std"].fillna(0),
-    marker="o",
-    capsize=4,
-    label="N=10000000"
-)
-
-plt.xlabel("Threads")
-plt.ylabel("Speedup")
-plt.title("Strong Scaling: Speedup vs Threads (N=10,000,000)")
-plt.grid(True)
-plt.legend()
-plt.tight_layout()
-plt.savefig("results/plots/strong_scaling_speedup.png", dpi=200)
-plt.close()
-
-# =========================
-# GRAFICO 2: STRONG SCALING TIME
-# =========================
-plt.figure(figsize=(8, 5))
-
-tmp = strong_agg.sort_values("threads")
-plt.errorbar(
-    tmp["threads"],
-    tmp["time_par_median"],
-    yerr=tmp["time_par_std"].fillna(0),
-    marker="o",
-    capsize=4,
-    label="N=10000000"
-)
-
-plt.xlabel("Threads")
-plt.ylabel("Time (s)")
-plt.title("Strong Scaling: Parallel Time vs Threads (N=10,000,000)")
-plt.grid(True)
-plt.legend()
-plt.tight_layout()
-plt.savefig("results/plots/strong_scaling_time.png", dpi=200)
-plt.close()
 
 # =========================
 # COSTRUZIONE DATI WEAK SCALING
@@ -168,6 +98,7 @@ if weak_rows:
 
     plt.axhline(base_time, linestyle="--", label="Ideal constant time")
 
+    plt.xticks(list(weak_df["threads"]))
     plt.xlabel("Threads")
     plt.ylabel("Time (s)")
     plt.title("Weak Scaling: Time vs Threads")
@@ -189,6 +120,7 @@ if weak_rows:
     )
     plt.axhline(1.0, linestyle="--", label="Ideal efficiency")
 
+    plt.xticks(list(weak_df["threads"]))
     plt.xlabel("Threads")
     plt.ylabel("Weak Scaling Efficiency")
     plt.title("Weak Scaling: Efficiency vs Threads")
@@ -305,18 +237,6 @@ if has_phase_data:
 
     plt.figure(figsize=(11, 6))
     bottom = np.zeros(len(phase_df))
-
-    for col in phase_names + ["Other Overhead"]:
-        plt.bar(
-            phase_df["label"],
-            phase_df[col],
-            bottom=bottom,
-            label=col,
-            color=colors[col],
-            edgecolor="white",
-            linewidth=0.5
-        )
-        bottom += phase_df[col].values
 
     plt.ylabel("Time (ms)")
     plt.xlabel("Series / Threads")

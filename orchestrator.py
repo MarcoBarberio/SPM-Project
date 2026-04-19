@@ -1,3 +1,4 @@
+import argparse
 import subprocess
 import json
 import os
@@ -18,48 +19,149 @@ RESULTS_DIR.mkdir(exist_ok=True)
 RESULTS_FILE = RESULTS_DIR / "results.json"
 CONFIG_FILE = RESULTS_DIR / "experiment_config.json"
 
-# cartella per eventuali file temporanei
 TMP_DIR = RESULTS_DIR / "tmp"
 TMP_DIR.mkdir(exist_ok=True)
 
+results = []
+
 # ============================================================
-# GLOBAL CONFIG
+# DEFAULTS
 # ============================================================
 
-Ps = [1024]
-seeds = list(range(10))
-max_key = 100_000
+DEFAULT_PS = [1024]
+DEFAULT_SEEDS = list(range(10))
+DEFAULT_MAX_KEY = 100_000
 
-# correctness / debug
-RUN_CORRECTNESS = True
-correctness_cases = [
+DEFAULT_CORRECTNESS_CASES = [
     {"NR": 0, "NS": 0, "P": 4, "threads_list": [1, 2]},
     {"NR": 1, "NS": 1, "P": 4, "threads_list": [1, 2]},
     {"NR": 100, "NS": 100, "P": 8, "threads_list": [1, 2, 4]},
     {"NR": 500, "NS": 500, "P": 16, "threads_list": [1, 2, 4]},
 ]
 
-# strong scaling: problema fisso, variano i thread
-RUN_STRONG = True
-strong_Ns = [10_000_000]
-strong_threads = [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
+DEFAULT_STRONG_NS = [10_000_000]
+DEFAULT_STRONG_THREADS = [1, 2, 4, 8]
 
-# weak scaling: carico per thread costante, quindi N cresce con T
-RUN_WEAK = True
-weak_base_N = 200_000
-weak_threads = [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
-weak_cases = [(weak_base_N * t, weak_base_N * t, t) for t in weak_threads]
+DEFAULT_WEAK_BASE_N = 200_000
+DEFAULT_WEAK_THREADS = [1, 2, 4, 8]
 
-# se True, nel weak scaling esegue anche la sequenziale per lo stesso input
-RUN_SEQ_FOR_WEAK = True
+DEFAULT_TIMEOUT_SEC = 1800
 
-TIMEOUT_SEC = 1800  # 30 minuti a run
 
 # ============================================================
-# RESULTS
+# ARGPARSE
 # ============================================================
 
-results = []
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run Module 2 experiments")
+
+    parser.add_argument(
+        "--run",
+        nargs="+",
+        choices=["correctness", "strong", "weak"],
+        default=["correctness", "strong", "weak"],
+        help="Which experiment groups to run"
+    )
+
+    parser.add_argument(
+        "--ps",
+        nargs="+",
+        type=int,
+        default=DEFAULT_PS,
+        help="Partition counts P"
+    )
+
+    parser.add_argument(
+        "--seeds",
+        nargs="+",
+        type=int,
+        default=DEFAULT_SEEDS,
+        help="Seeds to use"
+    )
+
+    parser.add_argument(
+        "--max-key",
+        type=int,
+        default=DEFAULT_MAX_KEY,
+        help="max_key parameter"
+    )
+
+    parser.add_argument(
+        "--timeout-sec",
+        type=int,
+        default=DEFAULT_TIMEOUT_SEC,
+        help="Timeout per run in seconds"
+    )
+
+    parser.add_argument(
+        "--results-file",
+        type=str,
+        default=str(RESULTS_FILE),
+        help="Output results JSON path"
+    )
+
+    parser.add_argument(
+        "--config-file",
+        type=str,
+        default=str(CONFIG_FILE),
+        help="Output config JSON path"
+    )
+
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Append to existing results file instead of overwriting"
+    )
+
+    # correctness
+    parser.add_argument(
+        "--correctness-cases-file",
+        type=str,
+        default=None,
+        help="Optional JSON file for correctness cases"
+    )
+
+    # strong
+    parser.add_argument(
+        "--strong-ns",
+        nargs="+",
+        type=int,
+        default=DEFAULT_STRONG_NS,
+        help="Problem sizes N for strong scaling"
+    )
+
+    parser.add_argument(
+        "--strong-threads",
+        nargs="+",
+        type=int,
+        default=DEFAULT_STRONG_THREADS,
+        help="Thread counts for strong scaling"
+    )
+
+    # weak
+    parser.add_argument(
+        "--weak-base-n",
+        type=int,
+        default=DEFAULT_WEAK_BASE_N,
+        help="Base N per thread for weak scaling"
+    )
+
+    parser.add_argument(
+        "--weak-threads",
+        nargs="+",
+        type=int,
+        default=DEFAULT_WEAK_THREADS,
+        help="Thread counts for weak scaling"
+    )
+
+    parser.add_argument(
+        "--run-seq-for-weak",
+        action="store_true",
+        help="Also run sequential version for weak scaling cases"
+    )
+
+    return parser.parse_args()
+
 
 # ============================================================
 # HELPERS
@@ -72,37 +174,24 @@ def check_executables():
         raise FileNotFoundError(f"Missing executable: {PAR_EXE}")
 
 
-def save_results():
-    with open(RESULTS_FILE, "w", encoding="utf-8") as f:
+def save_results(results_file: Path):
+    with open(results_file, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=4)
 
 
-def save_config():
-    config = {
-        "Ps": Ps,
-        "seeds": seeds,
-        "max_key": max_key,
-        "RUN_CORRECTNESS": RUN_CORRECTNESS,
-        "correctness_cases": correctness_cases,
-        "RUN_STRONG": RUN_STRONG,
-        "strong_Ns": strong_Ns,
-        "strong_threads": strong_threads,
-        "RUN_WEAK": RUN_WEAK,
-        "weak_base_N": weak_base_N,
-        "weak_threads": weak_threads,
-        "weak_cases": weak_cases,
-        "RUN_SEQ_FOR_WEAK": RUN_SEQ_FOR_WEAK,
-        "TIMEOUT_SEC": TIMEOUT_SEC,
-    }
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=4)
+def save_config(config_file: Path, cfg: dict):
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=4)
+
+
+def load_correctness_cases(path):
+    if path is None:
+        return DEFAULT_CORRECTNESS_CASES
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def parse_stdout(stdout: str):
-    """
-    Tiene solo i campi eventualmente utili da stdout.
-    Il JSON della run è la fonte principale.
-    """
     parsed = {}
 
     for line in stdout.strip().splitlines():
@@ -152,19 +241,12 @@ def load_json_file(path: Path):
 
 
 def merge_run_data(stdout_data: dict, json_data: dict):
-    """
-    Unisce i dati letti dal JSON con quelli eventualmente stampati su stdout.
-    Il JSON ha priorità.
-    """
     merged = dict(stdout_data)
     merged.update(json_data)
     return merged
 
 
-def run_cmd_with_json(cmd_base):
-    """
-    Esegue il comando aggiungendo -json <tmpfile>, legge il json prodotto e lo elimina.
-    """
+def run_cmd_with_json(cmd_base, timeout_sec: int):
     tmp_fd, tmp_name = tempfile.mkstemp(prefix="run_", suffix=".json", dir=TMP_DIR)
     os.close(tmp_fd)
     tmp_path = Path(tmp_name)
@@ -177,7 +259,7 @@ def run_cmd_with_json(cmd_base):
             check=True,
             capture_output=True,
             text=True,
-            timeout=TIMEOUT_SEC
+            timeout=timeout_sec
         )
 
         stdout_data = parse_stdout(completed.stdout)
@@ -186,15 +268,14 @@ def run_cmd_with_json(cmd_base):
             raise RuntimeError(f"Expected JSON output file not found: {tmp_path}")
 
         json_data = load_json_file(tmp_path)
-        merged = merge_run_data(stdout_data, json_data)
-        return merged
+        return merge_run_data(stdout_data, json_data)
 
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
 
 
-def run_seq(nr, ns, seed, max_key, p):
+def run_seq(nr, ns, seed, max_key, p, timeout_sec):
     cmd = [
         str(SEQ_EXE),
         "-nr", str(nr),
@@ -203,10 +284,10 @@ def run_seq(nr, ns, seed, max_key, p):
         "-max-key", str(max_key),
         "-p", str(p),
     ]
-    return run_cmd_with_json(cmd)
+    return run_cmd_with_json(cmd, timeout_sec)
 
 
-def run_par(nr, ns, seed, max_key, p, t):
+def run_par(nr, ns, seed, max_key, p, t, timeout_sec):
     cmd = [
         str(PAR_EXE),
         "-nr", str(nr),
@@ -216,20 +297,10 @@ def run_par(nr, ns, seed, max_key, p, t):
         "-p", str(p),
         "-t", str(t),
     ]
-    return run_cmd_with_json(cmd)
+    return run_cmd_with_json(cmd, timeout_sec)
 
 
-def build_result_record(
-    experiment_type,
-    nr,
-    ns,
-    p,
-    seed,
-    t,
-    seq,
-    par,
-    max_key,
-):
+def build_result_record(experiment_type, nr, ns, p, seed, t, seq, par, max_key):
     seq_time = seq.get("time_total", seq.get("time_sec")) if seq is not None else None
     par_time = par.get("time_total", par.get("time_sec"))
 
@@ -268,7 +339,6 @@ def build_result_record(
         "checksum_correct": checksum_correct,
     }
 
-    # naive verifier, if present
     if seq is not None and "naive_join_count" in seq:
         record["naive_join_count"] = seq["naive_join_count"]
         record["naive_checksum1"] = seq["naive_checksum1"]
@@ -302,103 +372,84 @@ def build_result_record(
 # EXPERIMENTS
 # ============================================================
 
-def run_correctness_experiments():
+def run_correctness_experiments(cfg):
     print("\n==============================")
     print("CORRECTNESS EXPERIMENTS")
     print("==============================")
 
-    for case in correctness_cases:
+    for case in cfg["correctness_cases"]:
         nr = case["NR"]
         ns = case["NS"]
         p = case["P"]
         local_threads = case["threads_list"]
 
-        for seed in seeds:
+        for seed in cfg["seeds"]:
             print(f"[CORRECTNESS][SEQ] NR={nr} NS={ns} P={p} seed={seed}")
-            seq = run_seq(nr, ns, seed, max_key, p)
+            seq = run_seq(nr, ns, seed, cfg["max_key"], p, cfg["timeout_sec"])
 
             for t in local_threads:
                 print(f"[CORRECTNESS][PAR] NR={nr} NS={ns} P={p} seed={seed} T={t}")
-                par = run_par(nr, ns, seed, max_key, p, t)
+                par = run_par(nr, ns, seed, cfg["max_key"], p, t, cfg["timeout_sec"])
 
-                record = build_result_record(
+                results.append(build_result_record(
                     experiment_type="correctness",
-                    nr=nr,
-                    ns=ns,
-                    p=p,
-                    seed=seed,
-                    t=t,
-                    seq=seq,
-                    par=par,
-                    max_key=max_key,
-                )
-                results.append(record)
-                save_results()
+                    nr=nr, ns=ns, p=p, seed=seed, t=t,
+                    seq=seq, par=par, max_key=cfg["max_key"]
+                ))
+                save_results(cfg["results_file"])
 
 
-def run_strong_scaling_experiments():
+def run_strong_scaling_experiments(cfg):
     print("\n==============================")
     print("STRONG SCALING EXPERIMENTS")
     print("==============================")
 
-    for p in Ps:
-        for n in strong_Ns:
+    for p in cfg["ps"]:
+        for n in cfg["strong_ns"]:
             nr = int(n)
             ns = int(n)
 
-            for seed in seeds:
+            for seed in cfg["seeds"]:
                 print(f"[STRONG][SEQ] NR={nr} NS={ns} P={p} seed={seed}")
-                seq = run_seq(nr, ns, seed, max_key, p)
+                seq = run_seq(nr, ns, seed, cfg["max_key"], p, cfg["timeout_sec"])
 
-                for t in strong_threads:
+                for t in cfg["strong_threads"]:
                     print(f"[STRONG][PAR] NR={nr} NS={ns} P={p} seed={seed} T={t}")
-                    par = run_par(nr, ns, seed, max_key, p, t)
+                    par = run_par(nr, ns, seed, cfg["max_key"], p, t, cfg["timeout_sec"])
 
-                    record = build_result_record(
+                    results.append(build_result_record(
                         experiment_type="strong",
-                        nr=nr,
-                        ns=ns,
-                        p=p,
-                        seed=seed,
-                        t=t,
-                        seq=seq,
-                        par=par,
-                        max_key=max_key,
-                    )
-                    results.append(record)
-                    save_results()
+                        nr=nr, ns=ns, p=p, seed=seed, t=t,
+                        seq=seq, par=par, max_key=cfg["max_key"]
+                    ))
+                    save_results(cfg["results_file"])
 
 
-def run_weak_scaling_experiments():
+def run_weak_scaling_experiments(cfg):
     print("\n==============================")
     print("WEAK SCALING EXPERIMENTS")
     print("==============================")
 
-    for p in Ps:
-        for seed in seeds:
+    weak_cases = [(cfg["weak_base_n"] * t, cfg["weak_base_n"] * t, t) for t in cfg["weak_threads"]]
+
+    for p in cfg["ps"]:
+        for seed in cfg["seeds"]:
             for nr, ns, t in weak_cases:
                 seq = None
 
-                if RUN_SEQ_FOR_WEAK:
+                if cfg["run_seq_for_weak"]:
                     print(f"[WEAK][SEQ] NR={nr} NS={ns} P={p} seed={seed}")
-                    seq = run_seq(nr, ns, seed, max_key, p)
+                    seq = run_seq(nr, ns, seed, cfg["max_key"], p, cfg["timeout_sec"])
 
                 print(f"[WEAK][PAR] NR={nr} NS={ns} P={p} seed={seed} T={t}")
-                par = run_par(nr, ns, seed, max_key, p, t)
+                par = run_par(nr, ns, seed, cfg["max_key"], p, t, cfg["timeout_sec"])
 
-                record = build_result_record(
+                results.append(build_result_record(
                     experiment_type="weak",
-                    nr=nr,
-                    ns=ns,
-                    p=p,
-                    seed=seed,
-                    t=t,
-                    seq=seq,
-                    par=par,
-                    max_key=max_key,
-                )
-                results.append(record)
-                save_results()
+                    nr=nr, ns=ns, p=p, seed=seed, t=t,
+                    seq=seq, par=par, max_key=cfg["max_key"]
+                ))
+                save_results(cfg["results_file"])
 
 
 # ============================================================
@@ -406,21 +457,64 @@ def run_weak_scaling_experiments():
 # ============================================================
 
 def main():
+    args = parse_args()
     check_executables()
-    save_config()
 
-    if RUN_CORRECTNESS:
-        run_correctness_experiments()
+    results_file = Path(args.results_file)
+    config_file = Path(args.config_file)
 
-    if RUN_STRONG:
-        run_strong_scaling_experiments()
+    global results
+    if args.append and results_file.exists():
+        with open(results_file, "r", encoding="utf-8") as f:
+            results = json.load(f)
+    else:
+        results = []
 
-    if RUN_WEAK:
-        run_weak_scaling_experiments()
+    cfg = {
+        "run": args.run,
+        "ps": args.ps,
+        "seeds": args.seeds,
+        "max_key": args.max_key,
+        "timeout_sec": args.timeout_sec,
+        "results_file": results_file,
+        "config_file": config_file,
+        "correctness_cases": load_correctness_cases(args.correctness_cases_file),
+        "strong_ns": args.strong_ns,
+        "strong_threads": args.strong_threads,
+        "weak_base_n": args.weak_base_n,
+        "weak_threads": args.weak_threads,
+        "run_seq_for_weak": args.run_seq_for_weak,
+    }
+
+    # salva config leggibile
+    save_config(config_file, {
+        "run": cfg["run"],
+        "ps": cfg["ps"],
+        "seeds": cfg["seeds"],
+        "max_key": cfg["max_key"],
+        "timeout_sec": cfg["timeout_sec"],
+        "correctness_cases": cfg["correctness_cases"],
+        "strong_ns": cfg["strong_ns"],
+        "strong_threads": cfg["strong_threads"],
+        "weak_base_n": cfg["weak_base_n"],
+        "weak_threads": cfg["weak_threads"],
+        "weak_cases": [(cfg["weak_base_n"] * t, cfg["weak_base_n"] * t, t) for t in cfg["weak_threads"]],
+        "run_seq_for_weak": cfg["run_seq_for_weak"],
+        "append": args.append,
+    })
+
+    if "correctness" in cfg["run"]:
+        run_correctness_experiments(cfg)
+
+    if "strong" in cfg["run"]:
+        run_strong_scaling_experiments(cfg)
+
+    if "weak" in cfg["run"]:
+        run_weak_scaling_experiments(cfg)
 
     print("\nFinished.")
-    print(f"Results saved in: {RESULTS_FILE}")
-    print(f"Config saved in:   {CONFIG_FILE}")
+    print(f"Results saved in: {results_file}")
+    print(f"Config saved in:   {config_file}")
 
 
 if __name__ == "__main__":
