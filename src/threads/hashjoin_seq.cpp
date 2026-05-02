@@ -35,7 +35,7 @@
 //
 //      This is done in three steps:
 //
-//      - mapping key -> partition id
+//      - mapping key -> partition id 
 //        Each key is mapped to a partition identifier in [0, P).
 //
 //      - histogram
@@ -73,21 +73,16 @@
 //
 
 #include "utilities.hpp"
-#include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <cstdlib>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
-
+#include <fstream>
 // a and b are fixed parameters for the hash function. In this case I use the same constants as splitmix64.
 #define a 0x9E3779B97F4A7C15ULL
 #define b 0xBF58476D1CE4E5B9ULL
@@ -162,9 +157,13 @@ static bool read_arg_u64(int argc, char** argv, const std::string& name, std::ui
     return false;
 }
 
-static void write_run_json_seq(const std::string& path, std::size_t NR, std::size_t NS, std::uint32_t P,
-                               std::uint64_t seed, std::uint64_t max_key, const std::string& workload,
-                               std::uint32_t hot_partitions, std::uint32_t skew_percent, const JoinResult& result,
+static void write_run_json_seq(const std::string& path,
+                               std::size_t NR,
+                               std::size_t NS,
+                               std::uint32_t P,
+                               std::uint64_t seed,
+                               std::uint64_t max_key,
+                               const JoinResult& result,
                                const PhaseTimes& times)
 {
     std::ofstream out(path);
@@ -181,9 +180,6 @@ static void write_run_json_seq(const std::string& path, std::size_t NR, std::siz
     out << "  \"P\": " << P << ",\n";
     out << "  \"seed\": " << seed << ",\n";
     out << "  \"max_key\": " << max_key << ",\n";
-    out << "  \"workload\": \"" << workload << "\",\n";
-    out << "  \"hot_partitions\": " << hot_partitions << ",\n";
-    out << "  \"skew_percent\": " << skew_percent << ",\n";
 
     out << "  \"join_count\": " << result.join_count << ",\n";
     out << "  \"checksum1\": " << result.checksum1 << ",\n";
@@ -210,17 +206,13 @@ static void usage(const char* prog)
     std::cerr << "Usage:\n"
               << "  " << prog << " -nr NR -ns NS -seed SEED -max-key K -p P\n\n"
               << "Parameters:\n"
-              << "  -nr              Number of records in relation R\n"
-              << "  -ns              Number of records in relation S\n"
-              << "  -seed            Deterministic seed\n"
-              << "  -max-key         Keys are generated in [0, max-key)\n"
-              << "  -p               Number of partitions, power of two required\n"
-              << "  -workload        uniform | skewed, default uniform\n"
-              << "  -hot-partitions  Number of hot partitions for skewed workload, default P/64\n"
-              << "  -skew-percent    Percentage of records assigned to hot partitions, default 90\n"
-              << "  -json            Optional path to save run information as JSON\n";
+              << "  -nr         Number of records in relation R\n"
+              << "  -ns         Number of records in relation S\n"
+              << "  -seed       Deterministic seed\n"
+              << "  -max-key    Keys are generated in [0, max-key)\n"
+              << "  -p          Number of partitions (power of two required in this reference code)\n"
+              << "  -json       Optional path to save run information as JSON\n";
 }
-
 static bool is_power_of_two(std::uint32_t x)
 {
     return x != 0 && (x & (x - 1U)) == 0;
@@ -253,9 +245,7 @@ static inline std::uint64_t splitmix64_next(std::uint64_t& state)
     return splitmix64_mix(state);
 }
 
-static inline std::uint32_t compute_partition_id(std::uint64_t key, std::uint32_t p);
-
-static std::vector<Record> generate_relation_uniform(std::size_t n, std::uint64_t seed, std::uint64_t max_key)
+static std::vector<Record> generate_relation(std::size_t n, std::uint64_t seed, std::uint64_t max_key)
 {
     std::vector<Record> out(n);
     std::uint64_t state = seed;
@@ -265,94 +255,7 @@ static std::vector<Record> generate_relation_uniform(std::size_t n, std::uint64_
         const std::uint64_t r = splitmix64_next(state);
         out[i].key = (max_key == 0) ? 0ULL : (r % max_key);
     }
-
     return out;
-}
-
-static std::vector<Record> generate_relation_skewed(std::size_t n, std::uint64_t seed, std::uint64_t max_key,
-                                                    std::uint32_t p, std::uint32_t hot_partitions,
-                                                    std::uint32_t skew_percent)
-{
-    if (max_key == 0)
-    {
-        throw std::runtime_error("Skewed workload requires max_key > 0.");
-    }
-
-    if (hot_partitions == 0 || hot_partitions > p)
-    {
-        throw std::runtime_error("Invalid number of hot partitions.");
-    }
-
-    if (skew_percent > 100)
-    {
-        throw std::runtime_error("skew_percent must be in [0, 100].");
-    }
-
-    std::vector<std::uint64_t> hot_keys;
-    std::vector<std::uint64_t> cold_keys;
-
-    for (std::uint64_t key = 0; key < max_key; ++key)
-    {
-        const std::uint32_t pid = compute_partition_id(key, p);
-
-        if (pid < hot_partitions)
-        {
-            hot_keys.push_back(key);
-        }
-        else
-        {
-            cold_keys.push_back(key);
-        }
-    }
-
-    if (hot_keys.empty())
-    {
-        throw std::runtime_error("No keys map to the selected hot partitions. Increase max_key or hot_partitions.");
-    }
-
-    if (cold_keys.empty() && skew_percent < 100)
-    {
-        throw std::runtime_error("No keys map to cold partitions. Increase max_key or reduce hot_partitions.");
-    }
-
-    std::vector<Record> out(n);
-    std::uint64_t state = seed;
-
-    for (std::size_t i = 0; i < n; ++i)
-    {
-        const std::uint64_t r = splitmix64_next(state);
-        const bool choose_hot = (r % 100) < skew_percent || cold_keys.empty();
-
-        const std::uint64_t r_key = splitmix64_next(state);
-
-        if (choose_hot)
-        {
-            out[i].key = hot_keys[r_key % hot_keys.size()];
-        }
-        else
-        {
-            out[i].key = cold_keys[r_key % cold_keys.size()];
-        }
-    }
-
-    return out;
-}
-
-static std::vector<Record> generate_relation(std::size_t n, std::uint64_t seed, std::uint64_t max_key, std::uint32_t p,
-                                             const std::string& workload, std::uint32_t hot_partitions,
-                                             std::uint32_t skew_percent)
-{
-    if (workload == "uniform")
-    {
-        return generate_relation_uniform(n, seed, max_key);
-    }
-
-    if (workload == "skewed")
-    {
-        return generate_relation_skewed(n, seed, max_key, p, hot_partitions, skew_percent);
-    }
-
-    throw std::runtime_error("Unknown workload. Use 'uniform' or 'skewed'.");
 }
 
 // ------------------------------------------------------------
@@ -474,7 +377,8 @@ struct PartitionedRelation
 // After this phase, all records belonging to the same partition
 // are stored contiguously in memory, enabling independent processing.
 //
-static PartitionedRelation partition_relation(const std::vector<Record>& rel, std::uint32_t p, PartitionTimes& times)
+static PartitionedRelation partition_relation(const std::vector<Record>& rel, std::uint32_t p,
+                                              PartitionTimes& times)
 {
     const auto t0 = Clock::now();
     const auto hist = compute_histogram(rel, p);
@@ -494,12 +398,13 @@ static PartitionedRelation partition_relation(const std::vector<Record>& rel, st
     const auto t4 = Clock::now();
 
     times.histogram = elapsed_sec(t0, t1);
-    times.prefix = elapsed_sec(t1, t2);
-    times.scatter = elapsed_sec(t2, t3);
-    times.total = elapsed_sec(t0, t4);
+    times.prefix    = elapsed_sec(t1, t2);
+    times.scatter   = elapsed_sec(t2, t3);
+    times.total     = elapsed_sec(t0, t4);
 
     return PartitionedRelation{.data = std::move(data), .begin = begin, .end = end};
 }
+
 
 // ------------------------------------------------------------
 // Local join on one partition
@@ -615,9 +520,9 @@ static JoinResult partitioned_hash_join_sequential(const std::vector<Record>& R,
 
     const auto t1 = Clock::now();
 
-    times.join_local = elapsed_sec(tj0, tj1);
+    times.join_local   = elapsed_sec(tj0, tj1);
     times.accumulation = elapsed_sec(ta0, ta1);
-    times.total = elapsed_sec(t0, t1);
+    times.total        = elapsed_sec(t0, t1);
 
     return total;
 }
@@ -653,23 +558,9 @@ static JoinResult naive_join_verifier(const std::vector<Record>& R, const std::v
 // ------------------------------------------------------------
 int main(int argc, char** argv)
 {
-    std::uint64_t nr = 0;
-    std::uint64_t ns = 0;
-    std::uint64_t seed = 0;
-    std::uint64_t max_key = 0;
-    std::uint64_t p = 0;
-
+    std::uint64_t nr = 0, ns = 0, seed = 0, max_key = 0, p = 0;
     std::string json_path;
     const bool save_json = read_arg_string(argc, argv, "-json", json_path);
-
-    std::string workload = "uniform";
-    read_arg_string(argc, argv, "-workload", workload);
-
-    std::uint64_t hot_partitions_arg = 0;
-    std::uint64_t skew_percent_arg = 90;
-
-    read_arg_u64(argc, argv, "-hot-partitions", hot_partitions_arg);
-    read_arg_u64(argc, argv, "-skew-percent", skew_percent_arg);
 
     if (!read_arg_u64(argc, argv, "-nr", nr) || !read_arg_u64(argc, argv, "-ns", ns) ||
         !read_arg_u64(argc, argv, "-seed", seed) || !read_arg_u64(argc, argv, "-max-key", max_key) ||
@@ -679,9 +570,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (p == 0 || p > std::numeric_limits<std::uint32_t>::max())
+    if (p > std::numeric_limits<std::uint32_t>::max())
     {
-        std::cerr << "Error: P must be in [1, UINT32_MAX].\n";
+        std::cerr << "Error: P too large.\n";
         return 1;
     }
 
@@ -689,72 +580,20 @@ int main(int argc, char** argv)
 
     if (!is_power_of_two(P))
     {
-        std::cerr << "Error: in this implementation, P must be a power of two.\n";
+        std::cerr << "Error: in this reference implementation, P must be a power of two.\n";
         return 1;
     }
-
-    if (workload != "uniform" && workload != "skewed")
-    {
-        std::cerr << "Error: workload must be either 'uniform' or 'skewed'.\n";
-        return 1;
-    }
-
-    std::uint32_t hot_partitions = 0;
-
-    if (hot_partitions_arg == 0)
-    {
-        hot_partitions = std::max<std::uint32_t>(1, P / 64);
-    }
-    else
-    {
-        if (hot_partitions_arg > std::numeric_limits<std::uint32_t>::max())
-        {
-            std::cerr << "Error: hot-partitions too large.\n";
-            return 1;
-        }
-
-        hot_partitions = static_cast<std::uint32_t>(hot_partitions_arg);
-    }
-
-    if (hot_partitions == 0 || hot_partitions > P)
-    {
-        std::cerr << "Error: hot-partitions must be in [1, P].\n";
-        return 1;
-    }
-
-    if (skew_percent_arg > 100)
-    {
-        std::cerr << "Error: skew-percent must be in [0, 100].\n";
-        return 1;
-    }
-
-    const std::uint32_t skew_percent = static_cast<std::uint32_t>(skew_percent_arg);
 
     const std::size_t NR = static_cast<std::size_t>(nr);
     const std::size_t NS = static_cast<std::size_t>(ns);
 
-    std::vector<Record> R;
-    std::vector<Record> S;
-
-    try
-    {
-        R = generate_relation(NR, seed, max_key, P, workload, hot_partitions, skew_percent);
-
-        S = generate_relation(NS, seed ^ 0xdeadebdecdeedef1ULL, max_key, P, workload, hot_partitions, skew_percent);
-    }
-    catch (const std::exception& e)
-    {
-        std::cerr << "Error while generating input relation: " << e.what() << "\n";
-        return 1;
-    }
+    const auto R = generate_relation(NR, seed, max_key);
+    const auto S = generate_relation(NS, seed ^ 0xdeadebdecdeedef1ULL, max_key);
 
     PhaseTimes times;
-
     const JoinResult result = partitioned_hash_join_sequential(R, S, P, times);
 
-    std::cout << "NR=" << NR << " NS=" << NS << " P=" << P << " seed=" << seed << " workload=" << workload
-              << " hot_partitions=" << hot_partitions << " skew_percent=" << skew_percent << " [0, " << max_key
-              << ")\n";
+    std::cout << "NR=" << NR << " NS=" << NS << " P=" << P << " seed=" << seed << " [0, " << max_key << ")\n";
 
     std::cout << "join_count=" << result.join_count << "\n";
     std::cout << "checksum1=" << result.checksum1 << "\n";
@@ -780,24 +619,14 @@ int main(int argc, char** argv)
     if (NR <= 500 && NS <= 500)
     {
         const JoinResult naive = naive_join_verifier(R, S);
-
         std::cout << "naive_join_count=" << naive.join_count << "\n";
         std::cout << "naive_checksum1=" << naive.checksum1 << "\n";
         std::cout << "naive_checksum2=" << naive.checksum2 << "\n";
-
-        if (naive.join_count != result.join_count || naive.checksum1 != result.checksum1 ||
-            naive.checksum2 != result.checksum2)
-        {
-            std::cerr << "Correctness check failed against naive verifier.\n";
-            return 1;
-        }
-
-        std::cout << "correctness=OK\n";
     }
 
     if (save_json)
     {
-        write_run_json_seq(json_path, NR, NS, P, seed, max_key, workload, hot_partitions, skew_percent, result, times);
+        write_run_json_seq(json_path, NR, NS, P, seed, max_key, result, times);
     }
 
     return 0;

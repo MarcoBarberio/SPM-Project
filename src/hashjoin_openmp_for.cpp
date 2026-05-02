@@ -1,22 +1,6 @@
-// hashjoin_seq.cpp
-//
-// Sequential reference for Module 2
-// Partitioned Hash Join with Duplicates
-//
-// This code is intentionally written to be simple and readable.
-// It is meant as a reference baseline and as a starting point for
-// the parallel version. You can modify it for improving performance,
-// provided you do not change the overall algorithm.
-//
-//
-// IMPORTANT:
-// The function compute_partition_id(...) below is intentionally very simple.
-// Students must replace it with their own mapping function from Module 1.
-// The same mapping function must be used consistently in both the sequential
-// and parallel versions.
-//
+// hashjoin_openmp_for.cpp
 // Run example:
-//   ./hashjoin_seq -nr 5 -ns 8 -seed 13 -max-key 8 -p 4
+//   ./hashjoin_openmp_for -nr 5 -ns 8 -seed 13 -max-key 8 -p 4 -t 4
 //
 // Output:
 //   join_count
@@ -82,6 +66,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <omp.h>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -162,10 +147,10 @@ static bool read_arg_u64(int argc, char** argv, const std::string& name, std::ui
     return false;
 }
 
-static void write_run_json_seq(const std::string& path, std::size_t NR, std::size_t NS, std::uint32_t P,
-                               std::uint64_t seed, std::uint64_t max_key, const std::string& workload,
-                               std::uint32_t hot_partitions, std::uint32_t skew_percent, const JoinResult& result,
-                               const PhaseTimes& times)
+static void write_run_json_omp_for(const std::string& path, std::size_t NR, std::size_t NS, std::uint32_t P,
+                                   std::size_t T, std::uint64_t seed, std::uint64_t max_key,
+                                   const std::string& workload, std::uint32_t hot_partitions,
+                                   std::uint32_t skew_percent, const JoinResult& result, const PhaseTimes& times)
 {
     std::ofstream out(path);
     if (!out)
@@ -175,10 +160,11 @@ static void write_run_json_seq(const std::string& path, std::size_t NR, std::siz
     }
 
     out << "{\n";
-    out << "  \"mode\": \"seq\",\n";
+    out << "  \"mode\": \"omp_for\",\n";
     out << "  \"NR\": " << NR << ",\n";
     out << "  \"NS\": " << NS << ",\n";
     out << "  \"P\": " << P << ",\n";
+    out << "  \"T\": " << T << ",\n";
     out << "  \"seed\": " << seed << ",\n";
     out << "  \"max_key\": " << max_key << ",\n";
     out << "  \"workload\": \"" << workload << "\",\n";
@@ -208,13 +194,14 @@ static void write_run_json_seq(const std::string& path, std::size_t NR, std::siz
 static void usage(const char* prog)
 {
     std::cerr << "Usage:\n"
-              << "  " << prog << " -nr NR -ns NS -seed SEED -max-key K -p P\n\n"
+              << "  " << prog << " -nr NR -ns NS -seed SEED -max-key K -p P -t T\n\n"
               << "Parameters:\n"
               << "  -nr              Number of records in relation R\n"
               << "  -ns              Number of records in relation S\n"
               << "  -seed            Deterministic seed\n"
               << "  -max-key         Keys are generated in [0, max-key)\n"
               << "  -p               Number of partitions, power of two required\n"
+              << "  -t               Number of OpenMP threads\n"
               << "  -workload        uniform | skewed, default uniform\n"
               << "  -hot-partitions  Number of hot partitions for skewed workload, default P/64\n"
               << "  -skew-percent    Percentage of records assigned to hot partitions, default 90\n"
@@ -375,6 +362,12 @@ static inline std::uint32_t compute_partition_id(std::uint64_t key, std::uint32_
     return map_single_key(key, a, b, shift);
 }
 
+struct HistogramData
+{
+    std::vector<std::size_t> hist;
+    std::vector<std::vector<std::size_t>> local_hists;
+};
+
 // ------------------------------------------------------------
 // Histogram
 // ------------------------------------------------------------
@@ -383,18 +376,43 @@ static inline std::uint32_t compute_partition_id(std::uint64_t key, std::uint32_
 //
 // hist[pid] = number of records whose key maps to pid
 //
-static std::vector<std::size_t> compute_histogram(const std::vector<Record>& rel, std::uint32_t p)
+static HistogramData compute_histogram(const std::vector<Record>& rel, std::uint32_t p, std::size_t nthreads)
 {
+    const std::size_t n = rel.size();
+
+    std::vector<std::vector<std::size_t>> local_hists(nthreads, std::vector<std::size_t>(p, 0));
+
+#pragma omp parallel for schedule(static) num_threads(nthreads)
+    for (std::size_t tid = 0; tid < nthreads; ++tid)
+    {
+        const std::size_t chunk = (n + nthreads - 1) / nthreads;
+        const std::size_t begin = tid * chunk;
+        const std::size_t end = std::min(begin + chunk, n);
+
+        auto& hist = local_hists[tid];
+
+        for (std::size_t i = begin; i < end; ++i)
+        {
+            const std::uint32_t pid = compute_partition_id(rel[i].key, p);
+            ++hist[pid];
+        }
+    }
+
     std::vector<std::size_t> hist(p, 0);
 
-    for (const auto& rec : rel)
+#pragma omp parallel for schedule(static) num_threads(nthreads)
+    for (std::uint32_t pid = 0; pid < p; ++pid)
     {
-        const std::uint32_t pid = compute_partition_id(rec.key, p);
-        ++hist[pid];
+        std::size_t sum = 0;
+        for (std::size_t tid = 0; tid < nthreads; ++tid)
+        {
+            sum += local_hists[tid][pid];
+        }
+        hist[pid] = sum;
     }
-    return hist;
-}
 
+    return HistogramData{std::move(hist), std::move(local_hists)};
+}
 // ------------------------------------------------------------
 // Prefix sum (exclusive scan)
 // ------------------------------------------------------------
@@ -430,17 +448,42 @@ static std::vector<std::size_t> exclusive_prefix_sum(const std::vector<std::size
 // We use a write cursor per partition, initialized from the begin offsets.
 //
 static std::vector<Record> scatter_partitioned(const std::vector<Record>& rel, std::uint32_t p,
-                                               const std::vector<std::size_t>& begin)
+                                               const std::vector<std::size_t>& begin,
+                                               const std::vector<std::vector<std::size_t>>& local_hists,
+                                               std::size_t nthreads)
 {
-    std::vector<Record> out(rel.size());
+    const std::size_t n = rel.size();
+    std::vector<Record> out(n);
 
-    // Current write position for each partition.
-    std::vector<std::size_t> next = begin;
+    std::vector<std::vector<std::size_t>> thread_begin(nthreads, std::vector<std::size_t>(p, 0));
 
-    for (const auto& rec : rel)
+    for (std::uint32_t pid = 0; pid < p; ++pid)
     {
-        const std::uint32_t pid = compute_partition_id(rec.key, p);
-        out[next[pid]++] = rec;
+        std::size_t offset = begin[pid];
+
+        for (std::size_t tid = 0; tid < nthreads; ++tid)
+        {
+            thread_begin[tid][pid] = offset;
+            offset += local_hists[tid][pid];
+        }
+    }
+
+#pragma omp parallel for schedule(static) num_threads(nthreads)
+    for (std::size_t tid = 0; tid < nthreads; ++tid)
+    {
+        const std::size_t chunk = (n + nthreads - 1) / nthreads;
+        const std::size_t i_begin = tid * chunk;
+        const std::size_t i_end = std::min(i_begin + chunk, n);
+
+        std::vector<std::size_t> next = thread_begin[tid];
+
+        for (std::size_t i = i_begin; i < i_end; ++i)
+        {
+            const auto& rec = rel[i];
+            const std::uint32_t pid = compute_partition_id(rec.key, p);
+
+            out[next[pid]++] = rec;
+        }
     }
 
     return out;
@@ -474,23 +517,26 @@ struct PartitionedRelation
 // After this phase, all records belonging to the same partition
 // are stored contiguously in memory, enabling independent processing.
 //
-static PartitionedRelation partition_relation(const std::vector<Record>& rel, std::uint32_t p, PartitionTimes& times)
+static PartitionedRelation partition_relation_loop(const std::vector<Record>& rel, std::uint32_t p,
+                                                   std::size_t nthreads, PartitionTimes& times)
 {
     const auto t0 = Clock::now();
-    const auto hist = compute_histogram(rel, p);
+
+    const HistogramData hdata = compute_histogram(rel, p, nthreads);
     const auto t1 = Clock::now();
 
-    const auto begin = exclusive_prefix_sum(hist);
+    const auto begin = exclusive_prefix_sum(hdata.hist);
     const auto t2 = Clock::now();
 
-    auto data = scatter_partitioned(rel, p, begin);
+    auto data = scatter_partitioned(rel, p, begin, hdata.local_hists, nthreads);
     const auto t3 = Clock::now();
 
     std::vector<std::size_t> end(p, 0);
     for (std::uint32_t pid = 0; pid < p; ++pid)
     {
-        end[pid] = begin[pid] + hist[pid];
+        end[pid] = begin[pid] + hdata.hist[pid];
     }
+
     const auto t4 = Clock::now();
 
     times.histogram = elapsed_sec(t0, t1);
@@ -570,47 +616,57 @@ static JoinResult join_one_partition(const PartitionedRelation& Rpart, const Par
 
     return result;
 }
+// ------------------------------------------------------------
+// Join all partitions using an OpenMP parallel for loop
+// ------------------------------------------------------------
+//
 
+static std::vector<JoinResult> join_partitions_loop(const PartitionedRelation& Rpart, const PartitionedRelation& Spart,
+                                                    std::uint32_t p, std::size_t nthreads)
+{
+    std::vector<JoinResult> locals(p);
+
+#pragma omp parallel for schedule(dynamic, 1) num_threads(nthreads)
+    for (long long pid = 0; pid < static_cast<long long>(p); ++pid)
+    {
+        locals[static_cast<std::size_t>(pid)] = join_one_partition(Rpart, Spart, static_cast<std::uint32_t>(pid));
+    }
+
+    return locals;
+}
 // ------------------------------------------------------------
-// Full sequential partitioned hash join
+// Full OpenMP loop-level partitioned hash join
 // ------------------------------------------------------------
 //
-// This is the end-to-end baseline:
-//
-//   1. Partition R
-//   2. Partition S
-//   3. For each partition p:
-//        local build + local probe
-//   4. Accumulate results
-//
-// Each partition can be processed independently.
-// This property is the basis for parallelization in Module 2.
-//
-static JoinResult partitioned_hash_join_sequential(const std::vector<Record>& R, const std::vector<Record>& S,
-                                                   std::uint32_t p, PhaseTimes& times)
+// This version preserves the same algorithmic structure as the sequential
+// implementation, but parallelizes histogram, scatter, and partition-wise join
+// using OpenMP parallel for constructs.
+
+static JoinResult partitioned_hash_join_loop(const std::vector<Record>& R, const std::vector<Record>& S,
+                                             std::uint32_t p, std::size_t nthreads, PhaseTimes& times)
 {
     const auto t0 = Clock::now();
 
-    const PartitionedRelation Rpart = partition_relation(R, p, times.R);
-    const PartitionedRelation Spart = partition_relation(S, p, times.S);
-
-    std::vector<JoinResult> locals(p);
+    const PartitionedRelation Rpart = partition_relation_loop(R, p, nthreads, times.R);
+    const PartitionedRelation Spart = partition_relation_loop(S, p, nthreads, times.S);
 
     const auto tj0 = Clock::now();
-    for (std::uint32_t pid = 0; pid < p; ++pid)
-    {
-        locals[pid] = join_one_partition(Rpart, Spart, pid);
-    }
+
+    std::vector<JoinResult> locals = join_partitions_loop(Rpart, Spart, p, nthreads);
+
     const auto tj1 = Clock::now();
 
     JoinResult total{};
+
     const auto ta0 = Clock::now();
+
     for (const auto& local : locals)
     {
         total.join_count += local.join_count;
         total.checksum1 += local.checksum1;
         total.checksum2 += local.checksum2;
     }
+
     const auto ta1 = Clock::now();
 
     const auto t1 = Clock::now();
@@ -658,6 +714,7 @@ int main(int argc, char** argv)
     std::uint64_t seed = 0;
     std::uint64_t max_key = 0;
     std::uint64_t p = 0;
+    std::uint64_t t = 0;
 
     std::string json_path;
     const bool save_json = read_arg_string(argc, argv, "-json", json_path);
@@ -673,7 +730,7 @@ int main(int argc, char** argv)
 
     if (!read_arg_u64(argc, argv, "-nr", nr) || !read_arg_u64(argc, argv, "-ns", ns) ||
         !read_arg_u64(argc, argv, "-seed", seed) || !read_arg_u64(argc, argv, "-max-key", max_key) ||
-        !read_arg_u64(argc, argv, "-p", p))
+        !read_arg_u64(argc, argv, "-p", p) || !read_arg_u64(argc, argv, "-t", t))
     {
         usage(argv[0]);
         return 1;
@@ -685,7 +742,20 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    if (t == 0)
+    {
+        std::cerr << "Error: number of OpenMP threads must be >= 1.\n";
+        return 1;
+    }
+
+    if (t > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+    {
+        std::cerr << "Error: T too large for OpenMP num_threads.\n";
+        return 1;
+    }
+
     const std::uint32_t P = static_cast<std::uint32_t>(p);
+    const std::size_t T = static_cast<std::size_t>(t);
 
     if (!is_power_of_two(P))
     {
@@ -730,6 +800,8 @@ int main(int argc, char** argv)
 
     const std::uint32_t skew_percent = static_cast<std::uint32_t>(skew_percent_arg);
 
+    omp_set_dynamic(0);
+
     const std::size_t NR = static_cast<std::size_t>(nr);
     const std::size_t NS = static_cast<std::size_t>(ns);
 
@@ -750,9 +822,9 @@ int main(int argc, char** argv)
 
     PhaseTimes times;
 
-    const JoinResult result = partitioned_hash_join_sequential(R, S, P, times);
+    const JoinResult result = partitioned_hash_join_loop(R, S, P, T, times);
 
-    std::cout << "NR=" << NR << " NS=" << NS << " P=" << P << " seed=" << seed << " workload=" << workload
+    std::cout << "NR=" << NR << " NS=" << NS << " P=" << P << " T=" << T << " seed=" << seed << " workload=" << workload
               << " hot_partitions=" << hot_partitions << " skew_percent=" << skew_percent << " [0, " << max_key
               << ")\n";
 
@@ -797,7 +869,8 @@ int main(int argc, char** argv)
 
     if (save_json)
     {
-        write_run_json_seq(json_path, NR, NS, P, seed, max_key, workload, hot_partitions, skew_percent, result, times);
+        write_run_json_omp_for(json_path, NR, NS, P, T, seed, max_key, workload, hot_partitions, skew_percent, result,
+                               times);
     }
 
     return 0;
