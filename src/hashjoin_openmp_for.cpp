@@ -3,10 +3,10 @@
 //   ./hashjoin_openmp_for -nr 5 -ns 8 -seed 13 -max-key 8 -p 4 -t 4
 //
 // Output:
-//   join_count
-//   checksum1
-//   checksum2
-//
+//   - join count
+//   - checksums for correctness verification
+//   - phase timings
+//   - optional JSON output
 //
 // The code follows these phases:
 //
@@ -17,7 +17,7 @@
 //      The goal of this phase is to reorganize the data so that
 //      records belonging to the same partition are stored contiguously.
 //
-//      This is done in three steps:
+//     This is done in four steps:
 //
 //      - mapping key -> partition id
 //        Each key is mapped to a partition identifier in [0, P).
@@ -76,13 +76,13 @@
 // a and b are fixed parameters for the hash function. In this case I use the same constants as splitmix64.
 #define a 0x9E3779B97F4A7C15ULL
 #define b 0xBF58476D1CE4E5B9ULL
+
 // ------------------------------------------------------------
 // Record definition
 // ------------------------------------------------------------
-//
-// For this reference implementation we only store the key.
-// You may extend the record with a payload in later versions if desired.
-//
+// In this implementation, each record stores only a key.
+// The join result is represented through the match count and checksums,
+// without materializing the full output tuples.
 struct Record
 {
     std::uint64_t key{};
@@ -343,19 +343,15 @@ static std::vector<Record> generate_relation(std::size_t n, std::uint64_t seed, 
 }
 
 // ------------------------------------------------------------
-// Intentionally simple partition mapping
+// Partition mapping
 // ------------------------------------------------------------
 //
-// This mapping is deliberately minimal.
-// It is here only so that the reference code is complete and runnable.
+// Map each key to a partition identifier in [0, P).
+// Since P is required to be a power of two, the number of partition bits
+// is log2(P). The shift value selects the appropriate number of high-order
+// bits from the 64-bit mapped key.
 //
-// Students must replace this function with their own implementation from Module 1.
-// The same mapping function must be used consistently in both the sequential
-// and parallel versions to ensure a fair performance comparison.
-//
-// If P is a power of two, then key & (P-1) maps into [0, P).
-// This is fast, but intentionally simplistic.
-//
+
 static inline std::uint32_t compute_partition_id(std::uint64_t key, std::uint32_t p)
 {
     int shift = 64 - static_cast<int>(std::log2(p));
@@ -584,12 +580,6 @@ static JoinResult join_one_partition(const PartitionedRelation& Rpart, const Par
     // Build phase:
     // count how many times each key appears in R_p.
     //
-    // NOTE: Adopting std::unordered_map is an implementation choice
-    // of the reference code, not a mandatory part of the algorithm itself.
-    // Students may discuss its impact on performance and, if properly justified,
-    // replace it with alternative structures in their analysis or optimized versions,
-    // provided that the overall join logic remains unchanged
-    //
     std::unordered_map<std::uint64_t, std::uint32_t> countR;
     countR.reserve((r_end - r_begin) * 2);
 
@@ -625,7 +615,9 @@ static std::vector<JoinResult> join_partitions_loop(const PartitionedRelation& R
                                                     std::uint32_t p, std::size_t nthreads)
 {
     std::vector<JoinResult> locals(p);
-
+// Dynamic scheduling is used because different partitions may contain
+// very different numbers of records, especially under skewed workloads.
+// Assigning partitions on demand helps reduce load imbalance.
 #pragma omp parallel for schedule(dynamic, 1) num_threads(nthreads)
     for (long long pid = 0; pid < static_cast<long long>(p); ++pid)
     {

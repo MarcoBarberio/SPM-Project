@@ -3,10 +3,10 @@
 //   ./hashjoin_openmp_task -nr 5 -ns 8 -seed 13 -max-key 8 -p 4 -t 4
 //
 // Output:
-//   join_count
-//   checksum1
-//   checksum2
-//
+//   - join count
+//   - checksums for correctness verification
+//   - phase timings
+//   - optional JSON output
 //
 // The code follows these phases:
 //
@@ -17,7 +17,7 @@
 //      The goal of this phase is to reorganize the data so that
 //      records belonging to the same partition are stored contiguously.
 //
-//      This is done in three steps:
+//     This is done in four steps:
 //
 //      - mapping key -> partition id
 //        Each key is mapped to a partition identifier in [0, P).
@@ -76,17 +76,19 @@
 // a and b are fixed parameters for the hash function. In this case I use the same constants as splitmix64.
 #define a 0x9E3779B97F4A7C15ULL
 #define b 0xBF58476D1CE4E5B9ULL
+
 // ------------------------------------------------------------
 // Record definition
 // ------------------------------------------------------------
-//
-// For this reference implementation we only store the key.
-// You may extend the record with a payload in later versions if desired.
-//
+// In this implementation, each record stores only a key.
+// The join result is represented through the match count and checksums,
+// without materializing the full output tuples.
+
 struct Record
 {
     std::uint64_t key{};
 };
+
 using Clock = std::chrono::steady_clock;
 // ------------------------------------------------------------
 // Join result
@@ -342,19 +344,15 @@ static std::vector<Record> generate_relation(std::size_t n, std::uint64_t seed, 
 }
 
 // ------------------------------------------------------------
-// Intentionally simple partition mapping
+// Partition mapping
 // ------------------------------------------------------------
 //
-// This mapping is deliberately minimal.
-// It is here only so that the reference code is complete and runnable.
+// Map each key to a partition identifier in [0, P).
+// Since P is required to be a power of two, the number of partition bits
+// is log2(P). The shift value selects the appropriate number of high-order
+// bits from the 64-bit mapped key.
 //
-// Students must replace this function with their own implementation from Module 1.
-// The same mapping function must be used consistently in both the sequential
-// and parallel versions to ensure a fair performance comparison.
-//
-// If P is a power of two, then key & (P-1) maps into [0, P).
-// This is fast, but intentionally simplistic.
-//
+
 static inline std::uint32_t compute_partition_id(std::uint64_t key, std::uint32_t p)
 {
     int shift = 64 - static_cast<int>(std::log2(p));
@@ -379,7 +377,7 @@ static HistogramData compute_histogram_tasks(const std::vector<Record>& rel, std
 {
     const std::size_t n = rel.size();
 
-    std::size_t ntasks = std::max<std::size_t>(1, nthreads * 4);
+    std::size_t ntasks = std::max<std::size_t>(1, nthreads);
     if (n > 0)
     {
         ntasks = std::min(ntasks, n);
@@ -393,19 +391,22 @@ static HistogramData compute_histogram_tasks(const std::vector<Record>& rel, std
     {
 #pragma omp single nowait
         {
-            for (std::size_t task_id = 0; task_id < ntasks; ++task_id)
+#pragma omp taskgroup
             {
-#pragma omp task firstprivate(task_id, chunk, n, p) shared(rel, local_hists)
+                for (std::size_t task_id = 0; task_id < ntasks; ++task_id)
                 {
-                    const std::size_t begin = task_id * chunk;
-                    const std::size_t end = std::min(begin + chunk, n);
-
-                    auto& hist = local_hists[task_id];
-
-                    for (std::size_t i = begin; i < end; ++i)
+#pragma omp task firstprivate(task_id, chunk, n, p) shared(rel, local_hists)
                     {
-                        const std::uint32_t pid = compute_partition_id(rel[i].key, p);
-                        ++hist[pid];
+                        const std::size_t begin = task_id * chunk;
+                        const std::size_t end = std::min(begin + chunk, n);
+
+                        auto& hist = local_hists[task_id];
+
+                        for (std::size_t i = begin; i < end; ++i)
+                        {
+                            const std::uint32_t pid = compute_partition_id(rel[i].key, p);
+                            ++hist[pid];
+                        }
                     }
                 }
             }
@@ -488,27 +489,29 @@ static std::vector<Record> scatter_partitioned_tasks(const std::vector<Record>& 
     {
 #pragma omp single nowait
         {
-            for (std::size_t task_id = 0; task_id < ntasks; ++task_id)
+#pragma omp taskgroup
             {
-#pragma omp task firstprivate(task_id, chunk, n, p) shared(rel, out, task_begin)
+                for (std::size_t task_id = 0; task_id < ntasks; ++task_id)
                 {
-                    const std::size_t begin_i = task_id * chunk;
-                    const std::size_t end_i = std::min(begin_i + chunk, n);
-
-                    std::vector<std::size_t> next = task_begin[task_id];
-
-                    for (std::size_t i = begin_i; i < end_i; ++i)
+#pragma omp task firstprivate(task_id, chunk, n, p) shared(rel, out, task_begin)
                     {
-                        const auto& rec = rel[i];
-                        const std::uint32_t pid = compute_partition_id(rec.key, p);
+                        const std::size_t begin_i = task_id * chunk;
+                        const std::size_t end_i = std::min(begin_i + chunk, n);
 
-                        out[next[pid]++] = rec;
+                        std::vector<std::size_t> next = task_begin[task_id];
+
+                        for (std::size_t i = begin_i; i < end_i; ++i)
+                        {
+                            const auto& rec = rel[i];
+                            const std::uint32_t pid = compute_partition_id(rec.key, p);
+
+                            out[next[pid]++] = rec;
+                        }
                     }
                 }
             }
         }
     }
-
     return out;
 }
 // ------------------------------------------------------------
@@ -604,13 +607,6 @@ static JoinResult join_one_partition(const PartitionedRelation& Rpart, const Par
 
     // Build phase:
     // count how many times each key appears in R_p.
-    //
-    // NOTE: Adopting std::unordered_map is an implementation choice
-    // of the reference code, not a mandatory part of the algorithm itself.
-    // Students may discuss its impact on performance and, if properly justified,
-    // replace it with alternative structures in their analysis or optimized versions,
-    // provided that the overall join logic remains unchanged
-    //
     std::unordered_map<std::uint64_t, std::uint32_t> countR;
     countR.reserve((r_end - r_begin) * 2);
 
@@ -638,7 +634,7 @@ static JoinResult join_one_partition(const PartitionedRelation& Rpart, const Par
     return result;
 }
 // ------------------------------------------------------------
-// Join all partitions using an OpenMP parallel for tasks
+// Join all partitions using OpenMP tasks.
 // ------------------------------------------------------------
 //
 

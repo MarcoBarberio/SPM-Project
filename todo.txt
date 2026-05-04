@@ -1,3 +1,4 @@
 1)Correggere per il primo modulo l'orchestrator in modo da metterlo parametrico
-2)Mettere il discorso del main thread
-3)provare a fare weak scaling con un un milione di partenza
+2) capire se cambia tanto tra  std::size_t ntasks = std::max<std::size_t>(1, nthreads); 
+   e std::size_t ntasks = std::max<std::size_t>(1, 4*nthreads);
+
