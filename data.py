@@ -240,7 +240,7 @@ def aggregate_weak_efficiency(df):
     return out.sort_values(["workload", "implementation", "threads"])
 
 
-def aggregate_skew_level_speedup(df, selected_thread=None):
+def select_skew_level_rows(df, selected_thread=None, require_speedup=False):
     # Prefer explicit skew_sensitivity experiments. If absent, fall back to strong rows,
     # but a meaningful skew-level plot requires more than one skew_percent value.
     if "skew_percent" not in df.columns:
@@ -250,10 +250,19 @@ def aggregate_skew_level_speedup(df, selected_thread=None):
     if skew.empty:
         skew = df[df["experiment_type"] == "strong"].copy()
 
-    if "speedup_vs_seq" not in skew.columns:
+    required = ["time_impl"]
+    if require_speedup:
+        required.append("speedup_vs_seq")
+
+    missing = [col for col in required if col not in skew.columns]
+    if missing:
         return pd.DataFrame(), None
 
-    skew = skew[(skew["workload"] == "skewed") & skew["speedup_vs_seq"].notna()].copy()
+    mask = (skew["workload"] == "skewed") & skew["time_impl"].notna()
+    if require_speedup:
+        mask &= skew["speedup_vs_seq"].notna()
+
+    skew = skew[mask].copy()
 
     if skew.empty:
         return pd.DataFrame(), None
@@ -264,6 +273,19 @@ def aggregate_skew_level_speedup(df, selected_thread=None):
     skew = skew[skew["threads"] == selected_thread].copy()
 
     if skew["skew_percent"].nunique() < 2:
+        return pd.DataFrame(), selected_thread
+
+    return skew, selected_thread
+
+
+def aggregate_skew_level_speedup(df, selected_thread=None):
+    skew, selected_thread = select_skew_level_rows(
+        df,
+        selected_thread=selected_thread,
+        require_speedup=True,
+    )
+
+    if skew.empty:
         return pd.DataFrame(), selected_thread
 
     agg = skew.groupby(
@@ -278,6 +300,41 @@ def aggregate_skew_level_speedup(df, selected_thread=None):
         N=("N", "median"),
         P=("P", "median"),
     )
+
+    return agg.sort_values(["implementation", "skew_percent"]), selected_thread
+
+
+def aggregate_skew_level_time(df, selected_thread=None):
+    skew, selected_thread = select_skew_level_rows(
+        df,
+        selected_thread=selected_thread,
+        require_speedup=False,
+    )
+
+    if skew.empty:
+        return pd.DataFrame(), selected_thread
+
+    agg_dict = {
+        "time_impl_median": ("time_impl", "median"),
+        "time_impl_mean": ("time_impl", "mean"),
+        "time_impl_std": ("time_impl", "std"),
+        "seeds": ("seed", "nunique"),
+        "N": ("N", "median"),
+        "P": ("P", "median"),
+    }
+
+    if "time_seq" in skew.columns:
+        agg_dict["time_seq_median"] = ("time_seq", "median")
+        agg_dict["time_seq_mean"] = ("time_seq", "mean")
+        agg_dict["time_seq_std"] = ("time_seq", "std")
+
+    if "speedup_vs_seq" in skew.columns:
+        agg_dict["speedup_median"] = ("speedup_vs_seq", "median")
+
+    agg = skew.groupby(
+        ["skew_percent", "implementation", "threads"],
+        as_index=False
+    ).agg(**agg_dict)
 
     return agg.sort_values(["implementation", "skew_percent"]), selected_thread
 
@@ -429,6 +486,7 @@ def plot_strong_by_workload(strong_agg, plots_dir, dpi, show_std):
         )
         apply_thread_ticks(ax, tmp)
         ax.set_xlim(left=0.5, right=max_thread + 1)
+        ax.set_ylim(bottom=0, top=15)
         ax.legend()
 
         savefig(plots_dir / f"strong_speedup_{workload}.png", dpi)
@@ -462,6 +520,7 @@ def plot_strong_combined(strong_agg, plots_dir, dpi, show_std):
         title="Strong Scaling Speedup — OpenMP for vs OpenMP task",
     )
     apply_thread_ticks(ax, strong_agg)
+    ax.set_ylim(bottom=0, top=15)
     ax.legend()
 
     savefig(plots_dir / "strong_speedup_combined.png", dpi)
@@ -500,6 +559,7 @@ def plot_workload_impact(strong_agg, plots_dir, dpi, show_std):
             title=f"Workload Impact on Speedup — {implementation}",
         )
         apply_thread_ticks(ax, tmp)
+        ax.set_ylim(bottom=0, top=15)
         ax.legend()
 
         savefig(plots_dir / f"workload_impact_speedup_{implementation}.png", dpi)
@@ -651,7 +711,7 @@ def plot_skew_level_speedup(skew_agg, selected_thread, plots_dir, dpi, show_std)
         print(
             "No skew-level speedup plot generated: the results contain fewer than two skew_percent values.\n"
             "To create this plot, run the orchestrator with the skew_sensitivity experiment, e.g.\n"
-            "  python3 orchestrator_modulo_3.py --run skew_sensitivity --seeds 0 1 2 3 4 5 6 7 8 9 --append"
+            "  python3 orchestrator.py --run skew_sensitivity --seeds 0 1 2 3 4 5 6 7 8 9 --append"
         )
         return
 
@@ -679,6 +739,41 @@ def plot_skew_level_speedup(skew_agg, selected_thread, plots_dir, dpi, show_std)
     ax.legend()
 
     savefig(plots_dir / "skew_level_speedup.png", dpi)
+
+
+def plot_skew_level_time(skew_time_agg, selected_thread, plots_dir, dpi, show_std):
+    if skew_time_agg.empty:
+        print(
+            "No skew-level absolute-time plot generated: the results contain fewer than two skew_percent values.\n"
+            "To create this plot, run the orchestrator with the skew_sensitivity experiment, e.g.\n"
+            "  python3 orchestrator.py --run skew_sensitivity --seeds 0 1 2 3 4 5 6 7 8 9 --append"
+        )
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for implementation in sorted(skew_time_agg["implementation"].unique()):
+        g = skew_time_agg[skew_time_agg["implementation"] == implementation].sort_values("skew_percent")
+        yerr = g["time_impl_std"].fillna(0) if show_std else None
+        ax.errorbar(
+            g["skew_percent"],
+            g["time_impl_median"],
+            yerr=yerr,
+            marker="o",
+            capsize=4 if show_std else 0,
+            label=implementation,
+        )
+
+    setup_axis(
+        ax,
+        xlabel="Skew percentage assigned to hot partitions (%)",
+        ylabel="Execution time (s)",
+        title=f"Execution Time vs Skew Level — T={selected_thread}",
+    )
+    ax.set_xticks(sorted(skew_time_agg["skew_percent"].unique()))
+    ax.legend()
+
+    savefig(plots_dir / "skew_level_time.png", dpi)
 
 
 # ============================================================
@@ -722,7 +817,9 @@ def main():
     # Phase breakdown stacked bars.
     plot_phase_breakdowns(df, plots_dir, tables_dir, args.dpi)
 
-    # Optional skew-level speedup plot.
+    # Optional skew-level plots.
+    # The speedup plot compares each OpenMP implementation with the sequential
+    # baseline for the same skew level.
     skew_agg, selected_thread = aggregate_skew_level_speedup(df, args.skew_thread)
     if not skew_agg.empty:
         skew_path = tables_dir / "skew_level_speedup_summary.csv"
@@ -730,6 +827,16 @@ def main():
         print(f"Saved: {skew_path}")
 
     plot_skew_level_speedup(skew_agg, selected_thread, plots_dir, args.dpi, args.show_std)
+
+    # The absolute-time plot is often easier to interpret for skew-sensitivity,
+    # because the sequential baseline can also change when the data distribution changes.
+    skew_time_agg, selected_thread_time = aggregate_skew_level_time(df, args.skew_thread)
+    if not skew_time_agg.empty:
+        skew_time_path = tables_dir / "skew_level_time_summary.csv"
+        skew_time_agg.to_csv(skew_time_path, index=False)
+        print(f"Saved: {skew_time_path}")
+
+    plot_skew_level_time(skew_time_agg, selected_thread_time, plots_dir, args.dpi, args.show_std)
 
     print("\nDone.")
     print(f"Plots directory:  {plots_dir}")

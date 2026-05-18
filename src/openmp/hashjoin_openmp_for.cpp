@@ -1,6 +1,6 @@
-// hashjoin_openmp_task.cpp
+// hashjoin_openmp_for.cpp
 // Run example:
-//   ./hashjoin_openmp_task -nr 5 -ns 8 -seed 13 -max-key 8 -p 4 -t 4
+//   ./hashjoin_openmp_for -nr 5 -ns 8 -seed 13 -max-key 8 -p 4 -t 4
 //
 // Output:
 //   - join count
@@ -83,12 +83,10 @@
 // In this implementation, each record stores only a key.
 // The join result is represented through the match count and checksums,
 // without materializing the full output tuples.
-
 struct Record
 {
     std::uint64_t key{};
 };
-
 using Clock = std::chrono::steady_clock;
 // ------------------------------------------------------------
 // Join result
@@ -149,10 +147,10 @@ static bool read_arg_u64(int argc, char** argv, const std::string& name, std::ui
     return false;
 }
 
-static void write_run_json_omp_task(const std::string& path, std::size_t NR, std::size_t NS, std::uint32_t P,
-                                    std::size_t T, std::uint64_t seed, std::uint64_t max_key,
-                                    const std::string& workload, std::uint32_t hot_partitions,
-                                    std::uint32_t skew_percent, const JoinResult& result, const PhaseTimes& times)
+static void write_run_json_omp_for(const std::string& path, std::size_t NR, std::size_t NS, std::uint32_t P,
+                                   std::size_t T, std::uint64_t seed, std::uint64_t max_key,
+                                   const std::string& workload, std::uint32_t hot_partitions,
+                                   std::uint32_t skew_percent, const JoinResult& result, const PhaseTimes& times)
 {
     std::ofstream out(path);
     if (!out)
@@ -162,7 +160,7 @@ static void write_run_json_omp_task(const std::string& path, std::size_t NR, std
     }
 
     out << "{\n";
-    out << "  \"mode\": \"omp_task\",\n";
+    out << "  \"mode\": \"omp_for\",\n";
     out << "  \"NR\": " << NR << ",\n";
     out << "  \"NS\": " << NS << ",\n";
     out << "  \"P\": " << P << ",\n";
@@ -241,7 +239,14 @@ static inline std::uint64_t splitmix64_next(std::uint64_t& state)
     state += 0x9e3779b97f4a7c15ULL;
     return splitmix64_mix(state);
 }
+
 static inline std::uint32_t compute_partition_id(std::uint64_t key, std::uint32_t p);
+
+// ------------------------------------------------------------
+// Input generation
+// ------------------------------------------------------------
+// We generate keys in [0, max_key) using splitmix64_next for deterministic pseudo-random
+// generation. The workload can be uniform or skewed.
 
 static std::vector<Record> generate_relation_uniform(std::size_t n, std::uint64_t seed, std::uint64_t max_key)
 {
@@ -256,6 +261,10 @@ static std::vector<Record> generate_relation_uniform(std::size_t n, std::uint64_
 
     return out;
 }
+
+// Skewed workload generation:
+// hot partitions: number of partitions that receive the skewed load
+// skew percent: percentage of records that go to hot partitions
 
 static std::vector<Record> generate_relation_skewed(std::size_t n, std::uint64_t seed, std::uint64_t max_key,
                                                     std::uint32_t p, std::uint32_t hot_partitions,
@@ -358,7 +367,10 @@ static inline std::uint32_t compute_partition_id(std::uint64_t key, std::uint32_
     int shift = 64 - static_cast<int>(std::log2(p));
     return map_single_key(key, a, b, shift);
 }
-
+// The global histogram gives the total number of records per partition.
+// local_hists stores one private histogram per task.
+// These private histograms avoid data races during the parallel histogram phase
+// and are later reused to compute race-free scatter offsets.
 struct HistogramData
 {
     std::vector<std::size_t> hist;
@@ -373,54 +385,37 @@ struct HistogramData
 //
 // hist[pid] = number of records whose key maps to pid
 //
-static HistogramData compute_histogram_tasks(const std::vector<Record>& rel, std::uint32_t p, std::size_t nthreads)
+static HistogramData compute_histogram(const std::vector<Record>& rel, std::uint32_t p, std::size_t nthreads)
 {
     const std::size_t n = rel.size();
 
-    std::size_t ntasks = std::max<std::size_t>(1, nthreads);
-    if (n > 0)
+    std::vector<std::vector<std::size_t>> local_hists(nthreads, std::vector<std::size_t>(p, 0));
+
+#pragma omp parallel for schedule(static) num_threads(nthreads)
+    for (std::size_t tid = 0; tid < nthreads; ++tid)
     {
-        ntasks = std::min(ntasks, n);
-    }
+        const std::size_t chunk = (n + nthreads - 1) / nthreads;
+        const std::size_t begin = tid * chunk;
+        const std::size_t end = std::min(begin + chunk, n);
 
-    const std::size_t chunk = (n + ntasks - 1) / ntasks;
+        auto& hist = local_hists[tid];
 
-    std::vector<std::vector<std::size_t>> local_hists(ntasks, std::vector<std::size_t>(p, 0));
-
-#pragma omp parallel num_threads(static_cast<int>(nthreads))
-    {
-#pragma omp single nowait
+        for (std::size_t i = begin; i < end; ++i)
         {
-#pragma omp taskgroup
-            {
-                for (std::size_t task_id = 0; task_id < ntasks; ++task_id)
-                {
-#pragma omp task firstprivate(task_id, chunk, n, p) shared(rel, local_hists)
-                    {
-                        const std::size_t begin = task_id * chunk;
-                        const std::size_t end = std::min(begin + chunk, n);
-
-                        auto& hist = local_hists[task_id];
-
-                        for (std::size_t i = begin; i < end; ++i)
-                        {
-                            const std::uint32_t pid = compute_partition_id(rel[i].key, p);
-                            ++hist[pid];
-                        }
-                    }
-                }
-            }
+            const std::uint32_t pid = compute_partition_id(rel[i].key, p);
+            ++hist[pid];
         }
     }
 
     std::vector<std::size_t> hist(p, 0);
 
+#pragma omp parallel for schedule(static) num_threads(nthreads)
     for (std::uint32_t pid = 0; pid < p; ++pid)
     {
         std::size_t sum = 0;
-        for (std::size_t task_id = 0; task_id < ntasks; ++task_id)
+        for (std::size_t tid = 0; tid < nthreads; ++tid)
         {
-            sum += local_hists[task_id][pid];
+            sum += local_hists[tid][pid];
         }
         hist[pid] = sum;
     }
@@ -461,59 +456,48 @@ static std::vector<std::size_t> exclusive_prefix_sum(const std::vector<std::size
 //
 // We use a write cursor per partition, initialized from the begin offsets.
 //
-static std::vector<Record> scatter_partitioned_tasks(const std::vector<Record>& rel, std::uint32_t p,
-                                                     const std::vector<std::size_t>& begin,
-                                                     const std::vector<std::vector<std::size_t>>& local_hists,
-                                                     std::size_t nthreads)
+static std::vector<Record> scatter_partitioned(const std::vector<Record>& rel, std::uint32_t p,
+                                               const std::vector<std::size_t>& begin,
+                                               const std::vector<std::vector<std::size_t>>& local_hists,
+                                               std::size_t nthreads)
 {
     const std::size_t n = rel.size();
-    const std::size_t ntasks = local_hists.size();
-    const std::size_t chunk = (n + ntasks - 1) / ntasks;
-
     std::vector<Record> out(n);
 
-    std::vector<std::vector<std::size_t>> task_begin(ntasks, std::vector<std::size_t>(p, 0));
+    std::vector<std::vector<std::size_t>> thread_begin(nthreads, std::vector<std::size_t>(p, 0));
 
     for (std::uint32_t pid = 0; pid < p; ++pid)
     {
         std::size_t offset = begin[pid];
 
-        for (std::size_t task_id = 0; task_id < ntasks; ++task_id)
+        for (std::size_t tid = 0; tid < nthreads; ++tid)
         {
-            task_begin[task_id][pid] = offset;
-            offset += local_hists[task_id][pid];
+            thread_begin[tid][pid] = offset;
+            offset += local_hists[tid][pid];
         }
     }
 
-#pragma omp parallel num_threads(static_cast<int>(nthreads))
+#pragma omp parallel for schedule(static) num_threads(nthreads)
+    for (std::size_t tid = 0; tid < nthreads; ++tid)
     {
-#pragma omp single nowait
+        const std::size_t chunk = (n + nthreads - 1) / nthreads;
+        const std::size_t i_begin = tid * chunk;
+        const std::size_t i_end = std::min(i_begin + chunk, n);
+
+        std::vector<std::size_t> next = thread_begin[tid];
+
+        for (std::size_t i = i_begin; i < i_end; ++i)
         {
-#pragma omp taskgroup
-            {
-                for (std::size_t task_id = 0; task_id < ntasks; ++task_id)
-                {
-#pragma omp task firstprivate(task_id, chunk, n, p) shared(rel, out, task_begin)
-                    {
-                        const std::size_t begin_i = task_id * chunk;
-                        const std::size_t end_i = std::min(begin_i + chunk, n);
+            const auto& rec = rel[i];
+            const std::uint32_t pid = compute_partition_id(rec.key, p);
 
-                        std::vector<std::size_t> next = task_begin[task_id];
-
-                        for (std::size_t i = begin_i; i < end_i; ++i)
-                        {
-                            const auto& rec = rel[i];
-                            const std::uint32_t pid = compute_partition_id(rec.key, p);
-
-                            out[next[pid]++] = rec;
-                        }
-                    }
-                }
-            }
+            out[next[pid]++] = rec;
         }
     }
+
     return out;
 }
+
 // ------------------------------------------------------------
 // Partitioned relation metadata
 // ------------------------------------------------------------
@@ -542,18 +526,18 @@ struct PartitionedRelation
 // After this phase, all records belonging to the same partition
 // are stored contiguously in memory, enabling independent processing.
 //
-static PartitionedRelation partition_relation_tasks(const std::vector<Record>& rel, std::uint32_t p,
-                                                    std::size_t nthreads, PartitionTimes& times)
+static PartitionedRelation partition_relation_loop(const std::vector<Record>& rel, std::uint32_t p,
+                                                   std::size_t nthreads, PartitionTimes& times)
 {
     const auto t0 = Clock::now();
 
-    const HistogramData hdata = compute_histogram_tasks(rel, p, nthreads);
+    const HistogramData hdata = compute_histogram(rel, p, nthreads);
     const auto t1 = Clock::now();
 
     const auto begin = exclusive_prefix_sum(hdata.hist);
     const auto t2 = Clock::now();
 
-    auto data = scatter_partitioned_tasks(rel, p, begin, hdata.local_hists, nthreads);
+    auto data = scatter_partitioned(rel, p, begin, hdata.local_hists, nthreads);
     const auto t3 = Clock::now();
 
     std::vector<std::size_t> end(p, 0);
@@ -571,6 +555,7 @@ static PartitionedRelation partition_relation_tasks(const std::vector<Record>& r
 
     return PartitionedRelation{.data = std::move(data), .begin = begin, .end = end};
 }
+
 // ------------------------------------------------------------
 // Local join on one partition
 // ------------------------------------------------------------
@@ -607,6 +592,7 @@ static JoinResult join_one_partition(const PartitionedRelation& Rpart, const Par
 
     // Build phase:
     // count how many times each key appears in R_p.
+    //
     std::unordered_map<std::uint64_t, std::uint32_t> countR;
     countR.reserve((r_end - r_begin) * 2);
 
@@ -634,53 +620,44 @@ static JoinResult join_one_partition(const PartitionedRelation& Rpart, const Par
     return result;
 }
 // ------------------------------------------------------------
-// Join all partitions using OpenMP tasks.
+// Join all partitions using an OpenMP parallel for loop
 // ------------------------------------------------------------
 //
 
-static std::vector<JoinResult> join_partitions_tasks(const PartitionedRelation& Rpart, const PartitionedRelation& Spart,
-                                                     std::uint32_t p, std::size_t nthreads)
+static std::vector<JoinResult> join_partitions_loop(const PartitionedRelation& Rpart, const PartitionedRelation& Spart,
+                                                    std::uint32_t p, std::size_t nthreads)
 {
     std::vector<JoinResult> locals(p);
-
-#pragma omp parallel num_threads(static_cast<int>(nthreads))
+// Dynamic scheduling is used because different partitions may contain
+// very different numbers of records, especially under skewed workloads.
+// Assigning partitions on demand helps reduce load imbalance.
+#pragma omp parallel for schedule(dynamic, 1) num_threads(nthreads)
+    for (long long pid = 0; pid < static_cast<long long>(p); ++pid)
     {
-#pragma omp single nowait
-        {
-#pragma omp taskgroup
-            {
-                for (std::uint32_t pid = 0; pid < p; ++pid)
-                {
-#pragma omp task firstprivate(pid) shared(locals, Rpart, Spart)
-                    {
-                        locals[pid] = join_one_partition(Rpart, Spart, pid);
-                    }
-                }
-            }
-        }
+        locals[static_cast<std::size_t>(pid)] = join_one_partition(Rpart, Spart, static_cast<std::uint32_t>(pid));
     }
 
     return locals;
 }
-
 // ------------------------------------------------------------
-// Full OpenMP task-based partitioned hash join
+// Full OpenMP loop-level partitioned hash join
 // ------------------------------------------------------------
 //
 // This version preserves the same algorithmic structure as the sequential
 // implementation, but parallelizes histogram, scatter, and partition-wise join
-// using OpenMP tasks.
-static JoinResult partitioned_hash_join_tasks(const std::vector<Record>& R, const std::vector<Record>& S,
-                                              std::uint32_t p, std::size_t nthreads, PhaseTimes& times)
+// using OpenMP parallel for constructs.
+
+static JoinResult partitioned_hash_join_loop(const std::vector<Record>& R, const std::vector<Record>& S,
+                                             std::uint32_t p, std::size_t nthreads, PhaseTimes& times)
 {
     const auto t0 = Clock::now();
 
-    const PartitionedRelation Rpart = partition_relation_tasks(R, p, nthreads, times.R);
-    const PartitionedRelation Spart = partition_relation_tasks(S, p, nthreads, times.S);
+    const PartitionedRelation Rpart = partition_relation_loop(R, p, nthreads, times.R);
+    const PartitionedRelation Spart = partition_relation_loop(S, p, nthreads, times.S);
 
     const auto tj0 = Clock::now();
 
-    std::vector<JoinResult> locals = join_partitions_tasks(Rpart, Spart, p, nthreads);
+    std::vector<JoinResult> locals = join_partitions_loop(Rpart, Spart, p, nthreads);
 
     const auto tj1 = Clock::now();
 
@@ -850,7 +827,7 @@ int main(int argc, char** argv)
 
     PhaseTimes times;
 
-    const JoinResult result = partitioned_hash_join_tasks(R, S, P, T, times);
+    const JoinResult result = partitioned_hash_join_loop(R, S, P, T, times);
 
     std::cout << "NR=" << NR << " NS=" << NS << " P=" << P << " T=" << T << " seed=" << seed << " workload=" << workload
               << " hot_partitions=" << hot_partitions << " skew_percent=" << skew_percent << " [0, " << max_key
@@ -897,8 +874,8 @@ int main(int argc, char** argv)
 
     if (save_json)
     {
-        write_run_json_omp_task(json_path, NR, NS, P, T, seed, max_key, workload, hot_partitions, skew_percent, result,
-                                times);
+        write_run_json_omp_for(json_path, NR, NS, P, T, seed, max_key, workload, hot_partitions, skew_percent, result,
+                               times);
     }
 
     return 0;

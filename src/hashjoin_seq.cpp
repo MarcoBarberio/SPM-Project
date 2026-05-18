@@ -248,6 +248,12 @@ static inline std::uint64_t splitmix64_next(std::uint64_t& state)
 
 static inline std::uint32_t compute_partition_id(std::uint64_t key, std::uint32_t p);
 
+// ------------------------------------------------------------
+// Input generation
+// ------------------------------------------------------------
+// We generate keys in [0, max_key) using splitmix64_next for deterministic pseudo-random
+// generation. The workload can be uniform or skewed.
+
 static std::vector<Record> generate_relation_uniform(std::size_t n, std::uint64_t seed, std::uint64_t max_key)
 {
     std::vector<Record> out(n);
@@ -261,6 +267,10 @@ static std::vector<Record> generate_relation_uniform(std::size_t n, std::uint64_
 
     return out;
 }
+
+// Skewed workload generation:
+// hot partitions: number of partitions that receive the skewed load
+// skew percent: percentage of records that go to hot partitions
 
 static std::vector<Record> generate_relation_skewed(std::size_t n, std::uint64_t seed, std::uint64_t max_key,
                                                     std::uint32_t p, std::uint32_t hot_partitions,

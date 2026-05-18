@@ -293,8 +293,8 @@ def normalize_hot_partitions(hot_partitions, p, workload="uniform", skew_percent
     p = int(p)
     hot = max(1, min(int(hot_partitions), p))
 
-    # In uno skewed workload con skew_percent < 100 serve almeno
-    # una partizione cold. Quindi hot_partitions deve essere < P.
+    # In a skewed workload with skew_percent < 100 at least a 
+    # partition must be cold. So hot_partitions must be < P.
     if workload == "skewed" and int(skew_percent) < 100 and p > 1:
         hot = min(hot, p - 1)
 
