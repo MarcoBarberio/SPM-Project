@@ -1,0 +1,538 @@
+Compilation using the Makefile:
+
+- make
+
+or equivalently:
+
+- make modulo3
+
+Builds:
+
+- build/hashjoin_seq
+- build/hashjoin_openmp_for
+- build/hashjoin_openmp_task
+
+Clean:
+
+- make clean
+
+
+Direct compilation with g++:
+
+Sequential baseline:
+
+- g++ -I./include -std=c++20 -Wall -pthread -O3 src/hashjoin_seq.cpp -o build/hashjoin_seq
+
+OpenMP loop-based implementation:
+
+- g++ -I./include -std=c++20 -Wall -pthread -O3 -fopenmp src/hashjoin_openmp_for.cpp -o build/hashjoin_openmp_for
+
+OpenMP task-based implementation:
+
+- g++ -I./include -std=c++20 -Wall -pthread -O3 -fopenmp src/hashjoin_openmp_task.cpp -o build/hashjoin_openmp_task
+
+
+PROGRAM EXECUTION
+
+
+1) Sequential baseline
+
+Command:
+
+- ./build/hashjoin_seq -nr NR -ns NS -seed SEED -max-key K -p P -workload WORKLOAD -hot-partitions H -skew-percent SKEW [-json PATH]
+
+Parameters:
+
+- -nr              number of records in relation R
+- -ns              number of records in relation S
+- -seed            deterministic seed used for data generation
+- -max-key         keys generated in [0, max-key)
+- -p               number of partitions
+- -workload        input workload type: uniform or skewed
+- -hot-partitions  number of hot partitions used for the skewed workload
+- -skew-percent    percentage of records assigned to hot partitions in the skewed workload
+- -json            optional, saves run data in a JSON file
+
+Constraints:
+
+- P must be a power of 2
+- workload must be either uniform or skewed
+- hot-partitions must be at least 1
+- skew-percent must be between 0 and 100
+
+Examples:
+
+Uniform workload:
+
+- ./build/hashjoin_seq -nr 1000000 -ns 1000000 -seed 1 -max-key 100000 -p 1024 -workload uniform -hot-partitions 16 -skew-percent 90
+
+Skewed workload:
+
+- ./build/hashjoin_seq -nr 1000000 -ns 1000000 -seed 1 -max-key 100000 -p 1024 -workload skewed -hot-partitions 16 -skew-percent 90
+
+With JSON output:
+
+- ./build/hashjoin_seq -nr 1000 -ns 1000 -seed 1 -max-key 1000 -p 16 -workload uniform -hot-partitions 4 -skew-percent 90 -json results/seq_run.json
+
+Output:
+
+- join_count
+- checksum1
+- checksum2
+- phase times
+- time_total / time_sec
+
+For very small inputs, namely NR <= 500 and NS <= 500, it also prints:
+
+- naive_join_count
+- naive_checksum1
+- naive_checksum2
+
+
+2) OpenMP loop-based implementation
+
+Command:
+
+- ./build/hashjoin_openmp_for -nr NR -ns NS -seed SEED -max-key K -p P -workload WORKLOAD -hot-partitions H -skew-percent SKEW -t T [-json PATH]
+
+Parameters:
+
+- -nr              number of records in relation R
+- -ns              number of records in relation S
+- -seed            deterministic seed used for data generation
+- -max-key         keys generated in [0, max-key)
+- -p               number of partitions
+- -workload        input workload type: uniform or skewed
+- -hot-partitions  number of hot partitions used for the skewed workload
+- -skew-percent    percentage of records assigned to hot partitions in the skewed workload
+- -t               number of OpenMP threads
+- -json            optional, saves run data in a JSON file
+
+Constraints:
+
+- P must be a power of 2
+- T must be >= 1
+- workload must be either uniform or skewed
+- hot-partitions must be at least 1
+- skew-percent must be between 0 and 100
+
+Examples:
+
+Uniform workload:
+
+- ./build/hashjoin_openmp_for -nr 1000000 -ns 1000000 -seed 1 -max-key 100000 -p 1024 -workload uniform -hot-partitions 16 -skew-percent 90 -t 8
+
+Skewed workload:
+
+- ./build/hashjoin_openmp_for -nr 1000000 -ns 1000000 -seed 1 -max-key 100000 -p 1024 -workload skewed -hot-partitions 16 -skew-percent 90 -t 8
+
+With JSON output:
+
+- ./build/hashjoin_openmp_for -nr 1000 -ns 1000 -seed 1 -max-key 1000 -p 16 -workload uniform -hot-partitions 4 -skew-percent 90 -t 4 -json results/omp_for_run.json
+
+Output:
+
+- join_count
+- checksum1
+- checksum2
+- phase times
+- time_total / time_sec
+
+For very small inputs, namely NR <= 500 and NS <= 500, it also prints:
+
+- naive_join_count
+- naive_checksum1
+- naive_checksum2
+
+
+3) OpenMP task-based implementation
+
+Command:
+
+- ./build/hashjoin_openmp_task -nr NR -ns NS -seed SEED -max-key K -p P -workload WORKLOAD -hot-partitions H -skew-percent SKEW -t T [-json PATH]
+
+Parameters:
+
+- -nr              number of records in relation R
+- -ns              number of records in relation S
+- -seed            deterministic seed used for data generation
+- -max-key         keys generated in [0, max-key)
+- -p               number of partitions
+- -workload        input workload type: uniform or skewed
+- -hot-partitions  number of hot partitions used for the skewed workload
+- -skew-percent    percentage of records assigned to hot partitions in the skewed workload
+- -t               number of OpenMP threads
+- -json            optional, saves run data in a JSON file
+
+Constraints:
+
+- P must be a power of 2
+- T must be >= 1
+- workload must be either uniform or skewed
+- hot-partitions must be at least 1
+- skew-percent must be between 0 and 100
+
+Examples:
+
+Uniform workload:
+
+- ./build/hashjoin_openmp_task -nr 1000000 -ns 1000000 -seed 1 -max-key 100000 -p 1024 -workload uniform -hot-partitions 16 -skew-percent 90 -t 8
+
+Skewed workload:
+
+- ./build/hashjoin_openmp_task -nr 1000000 -ns 1000000 -seed 1 -max-key 100000 -p 1024 -workload skewed -hot-partitions 16 -skew-percent 90 -t 8
+
+With JSON output:
+
+- ./build/hashjoin_openmp_task -nr 1000 -ns 1000 -seed 1 -max-key 1000 -p 16 -workload skewed -hot-partitions 4 -skew-percent 90 -t 4 -json results/omp_task_run.json
+
+Output:
+
+- join_count
+- checksum1
+- checksum2
+- phase times
+- time_total / time_sec
+
+For very small inputs, namely NR <= 500 and NS <= 500, it also prints:
+
+- naive_join_count
+- naive_checksum1
+- naive_checksum2
+
+
+WORKLOADS
+
+
+1) Uniform workload
+
+In the uniform workload, keys are generated so that records are approximately evenly distributed across partitions.
+
+Example:
+
+- -workload uniform
+
+
+2) Skewed workload
+
+In the skewed workload, a given percentage of records is forced to map to a small subset of hot partitions.
+
+Example:
+
+- -workload skewed -hot-partitions 16 -skew-percent 90
+
+This means that approximately 90% of the records are assigned to 16 hot partitions.
+
+The purpose of the skewed workload is to create load imbalance across partitions and evaluate how the OpenMP loop-based and task-based implementations behave in this scenario.
+
+
+CORRECTNESS CHECKS
+
+Correctness is verified by comparing:
+
+- join_count
+- checksum1
+- checksum2
+
+For small inputs, the programs also compare the result against a naive reference join.
+
+For larger inputs, correctness is checked by comparing the final aggregate values produced by:
+
+- sequential baseline
+- OpenMP loop-based implementation
+- OpenMP task-based implementation
+
+The orchestrator automatically stores the field:
+
+- checksum_correct
+
+checksum_correct = true means that the OpenMP implementation produced the same:
+
+- join_count
+- checksum1
+- checksum2
+
+as the sequential baseline.
+
+
+ORCHESTRATOR
+
+
+Script:
+
+- python orchestrator.py [parameters]
+
+The orchestrator is used to execute:
+
+- correctness experiments
+- strong scaling experiments
+- weak scaling experiments
+- skew-sensitivity experiments
+
+It automatically runs the sequential baseline and the selected OpenMP implementations on the same input parameters, collects the JSON output of each run, and stores the results in a single JSON file.
+
+
+Available parameters:
+
+
+General:
+
+- --run correctness strong weak skew_sensitivity
+  chooses which experiment groups to run
+
+- --implementations omp_for omp_task
+  chooses which OpenMP implementations to test
+
+- --workloads uniform skewed
+  chooses which workloads to test
+
+- --ps P1 P2 ...
+  list of partition counts
+
+- --seeds S1 S2 ...
+  list of seeds
+
+- --max-key K
+  value of max_key
+
+- --hot-partitions H
+  number of hot partitions for the skewed workload
+
+- --skew-percent SKEW
+  percentage of records assigned to hot partitions for skewed workload
+
+- --timeout-sec X
+  timeout for a single run, in seconds
+
+- --results-file PATH
+  output JSON file for results
+
+- --config-file PATH
+  output JSON file for the experimental configuration
+
+- --append
+  appends results to the existing file instead of overwriting it
+
+
+Correctness:
+
+- --correctness-cases-file PATH
+  optional JSON file containing correctness cases
+
+
+Strong scaling:
+
+- --strong-ns N1 N2 ...
+  problem sizes for strong scaling experiments
+
+- --strong-threads T1 T2 ...
+  thread counts to use in strong scaling experiments
+
+
+Weak scaling:
+
+- --weak-base-n N
+  base workload per thread
+
+- --weak-threads T1 T2 ...
+  thread counts to use in weak scaling experiments
+
+- --run-seq-for-weak
+  also runs the sequential version in weak scaling tests
+
+
+Skew sensitivity:
+
+- --skew-percent-list S1 S2 ...
+  list of skew percentages to test
+
+- --skew-n N
+  problem size used by skew-sensitivity experiments
+
+- --skew-threads T
+  number of threads used by skew-sensitivity experiments
+
+
+DEFAULT PARAMETERS
+
+If no parameters are passed, the defaults are:
+
+- --run correctness strong weak
+- --implementations omp_for omp_task
+- --workloads uniform skewed
+- --ps 1024
+- --seeds 0 1 2 3 4 5 6 7 8 9
+- --max-key 100000
+- --hot-partitions 16
+- --skew-percent 90
+- --timeout-sec 1800
+
+Strong scaling defaults:
+
+- --strong-ns 10000000
+- --strong-threads 1 2 4 8 16 24 32
+
+Weak scaling defaults:
+
+- --weak-base-n 200000
+- --weak-threads 1 2 4 8 16 24 32
+
+Skew-sensitivity defaults:
+
+- --skew-percent-list 0 50 75 90 95 99
+- --skew-n 10000000
+- --skew-threads 16
+
+Notice:
+
+- skew_sensitivity is not executed by default.
+- To execute it, it must be explicitly included with --run.
+
+
+ORCHESTRATOR EXAMPLES
+
+
+1) Only correctness:
+
+- python orchestrator.py --run correctness
+
+
+2) Only strong scaling:
+
+- python orchestrator.py --run strong --strong-ns 1000000 5000000 10000000 --strong-threads 1 2 4 8
+
+
+3) Only weak scaling:
+
+- python orchestrator.py --run weak --weak-base-n 200000 --weak-threads 1 2 4 8
+
+
+4) Weak scaling also running the sequential baseline:
+
+- python orchestrator.py --run weak --weak-base-n 200000 --weak-threads 1 2 4 8 --run-seq-for-weak
+
+
+5) Uniform workload only:
+
+- python orchestrator.py --workloads uniform
+
+
+6) Skewed workload only:
+
+- python orchestrator.py --workloads skewed --hot-partitions 16 --skew-percent 90
+
+
+7) Only OpenMP loop-based implementation:
+
+- python orchestrator.py --implementations omp_for
+
+
+8) Only OpenMP task-based implementation:
+
+- python orchestrator.py --implementations omp_task
+
+
+9) Skew-sensitivity experiment:
+
+- python orchestrator.py --run skew_sensitivity --skew-n 10000000 --skew-threads 16 --skew-percent-list 0 50 75 90 95 99
+
+
+10) Complete run with correctness, strong scaling, weak scaling, and skew sensitivity:
+
+- python orchestrator.py --run correctness strong weak skew_sensitivity
+
+
+11) Complete run with custom parameters:
+
+- python orchestrator.py --run correctness strong weak skew_sensitivity --implementations omp_for omp_task --workloads uniform skewed --ps 1024 --seeds 0 1 2 --max-key 100000 --hot-partitions 16 --skew-percent 90 --strong-ns 1000000 5000000 --strong-threads 1 2 4 8 --weak-base-n 200000 --weak-threads 1 2 4 8 --skew-n 5000000 --skew-threads 8 --skew-percent-list 0 50 75 90 95 99
+
+12) Parameters used in my analysis:
+
+python orchestrator.py \
+  --run correctness strong weak skew_sensitivity \
+  --implementations omp_for omp_task \
+  --workloads uniform skewed \
+  --ps 1024 \
+  --seeds 0 1 2 3 4 5 6 7 8 9 \
+  --max-key 100000 \
+  --hot-partitions 16 \
+  --skew-percent 90 \
+  --strong-ns 10000000 \
+  --strong-threads 1 2 4 6 8 10 12 14 16 18 20 22 24 26 28 30 32 \
+  --weak-base-n 20000 \
+  --weak-threads 1 2 4 6 8 10 12 14 16 18 20 22 24 26 28 30 32 \
+  --run-seq-for-weak \
+  --skew-n 10000000 \
+  --skew-threads 8 \
+  --skew-percent-list 0 50 75 90 95 99
+
+GENERATED FILES
+
+The orchestrator saves:
+
+- results/results_modulo3.json
+- results/experiment_config_modulo3.json
+
+Temporary JSON files are created during each run inside:
+
+- results/tmp/
+
+These temporary files are removed automatically after being parsed.
+
+Each run with -json saves a JSON file containing:
+
+- run parameters
+- join_count
+- checksum1
+- checksum2
+- phase times
+- time_total
+
+
+RESULT FIELDS
+
+Each result record contains, among others:
+
+- experiment_type
+- implementation
+- NR
+- NS
+- P
+- seed
+- max_key
+- threads
+- N_per_thread
+- workload
+- hot_partitions
+- skew_percent
+- time_seq
+- time_impl
+- speedup_vs_seq
+- join_count_seq
+- join_count_impl
+- checksum1_seq
+- checksum1_impl
+- checksum2_seq
+- checksum2_impl
+- checksum_correct
+- phase timings for the sequential version
+- phase timings for the OpenMP implementation
+
+
+PHASE TIMES
+
+The programs may report the following phase timings:
+
+- time_partition_R
+- time_partition_S
+- time_histogram_R
+- time_prefix_R
+- time_scatter_R
+- time_histogram_S
+- time_prefix_S
+- time_scatter_S
+- time_join
+- time_accumulation
+- time_total
+
+These phase timings are useful to analyze where the execution time is spent and to compare the behavior of the loop-based and task-based OpenMP implementations.
