@@ -2,6 +2,7 @@
 #define MAPPING_CUDA_HPP
 
 #include <cstdint>
+#include <cstddef>
 #include <vector>
  
 void generate_mapping_cuda(const std::vector<uint64_t>& data, std::vector<uint64_t>& mapping, size_t n, int k,

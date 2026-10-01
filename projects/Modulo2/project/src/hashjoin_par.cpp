@@ -217,10 +217,11 @@ static HistogramData compute_histogram(const std::vector<Record>& rel, std::uint
         futures.emplace_back(pool.submit(
             [&, tid]
             {
+                // Each thread processes a chunk of the input relation.   
                 const std::size_t chunk = (n + nthreads - 1) / nthreads;
                 const std::size_t begin = tid * chunk;
                 const std::size_t end = std::min(begin + chunk, n);
-
+                
                 auto& hist = local_hists[tid];
                 for (std::size_t i = begin; i < end; ++i)
                 {
